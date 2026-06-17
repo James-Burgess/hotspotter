@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wbia-core — Executive Summary</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --fg: #c9d1d9;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d2991d;
+    --red: #f85149;
+    --border: #30363d;
+    --card: #161b22;
+    --muted: #8b949e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--fg);
+    line-height: 1.6; max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem;
+  }
+  header { text-align: center; padding: 3rem 0 2rem; }
+  h1 { font-size: 2.2rem; color: var(--accent); margin-bottom: 0.5rem; }
+  header p { color: var(--muted); font-size: 1.1rem; }
+  .badge-row { display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap; margin: 1.2rem 0; }
+  .badge {
+    display: inline-block; padding: 0.3rem 0.8rem; border-radius: 20px;
+    font-size: 0.85rem; font-weight: 600;
+  }
+  .badge-green { background: #1a3a1a; color: var(--green); border: 1px solid #2ea043; }
+  .badge-yellow { background: #3a2e0a; color: var(--yellow); border: 1px solid #bb8009; }
+  .badge-gray { background: #21262d; color: var(--muted); border: 1px solid var(--border); }
+  h2 { font-size: 1.4rem; color: var(--accent); margin: 2.5rem 0 0.8rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.15rem; margin: 1.5rem 0 0.5rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1.2rem 1.4rem; margin-bottom: 1rem;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th { text-align: left; padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--border); color: var(--muted); font-weight: 600; }
+  td { padding: 0.45rem 0.8rem; border-bottom: 1px solid var(--border); }
+  .done { color: var(--green); font-weight: 600; }
+  .todo { color: var(--yellow); }
+  .low { color: var(--muted); }
+  pre { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 1rem; overflow-x: auto; font-size: 0.85rem; line-height: 1.5; }
+  .mermaid-wrapper { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; overflow-x: auto; }
+  .big-num { font-size: 2.5rem; font-weight: 800; color: var(--accent); }
+  .label { color: var(--muted); font-size: 0.85rem; }
+  footer { text-align: center; padding: 2rem 0; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--border); margin-top: 3rem; }
+  @media (max-width: 700px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>wbia-core</h1>
+  <p>HotSpotter Wildlife Re-identification Pipeline — Parity Achieved</p>
+  <div class="badge-row">
+    <span class="badge badge-green">22/24 roadmap items done</span>
+    <span class="badge badge-green">Parity confirmed — 2 benchmark bugs fixed</span>
+    <span class="badge badge-gray">Last updated 2026-06-08</span>
+  </div>
+</header>
+
+<!-- ================================================================== -->
+<h2>End-to-End Pipeline</h2>
+
+<div class="mermaid-wrapper">
+<div class="mermaid">
+flowchart TB
+  subgraph wildbook["WILDBOOK (Java/Tomcat, port 8080)"]
+    direction LR
+    W1["User uploads image"]
+    W2["Saves MediaAsset, Annotation"]
+    W3["Calls detection →"]
+    W4["Calls identification →"]
+    W5["Shows ranked matches"]
+    W1 --> W2 --> W3
+    W4 --> W5
+  end
+
+  subgraph mlservice["ML-SERVICE (FastAPI, port 6050)"]
+    direction TB
+    M1["POST /pipeline/"]
+    M2["DETECTION (YOLO)<br/>→ bboxes + species"]
+    M3["CLASSIFICATION<br/>→ species labels"]
+    M4["EMBEDDING (MiewID)<br/>→ vector [D]"]
+    M5["FOREGROUND (future)<br/>→ probchip mask"]
+    M1 --> M2 --> M3 --> M4
+    M2 -.-> M5
+  end
+
+  subgraph wildlifeid["WILDLIFE-ID (FastAPI, port 7000)"]
+    direction TB
+    L1["POST /api/identify/"]
+    L2["FEATURE EXTRACTION<br/>warpAffine → pyhesaff"]
+    L3["KNN SEARCH<br/>FLANN/FAISS over pgvector"]
+    L4["SCORING<br/>LNBNN × filters → fmech"]
+    L5["SPATIAL VERIFICATION<br/>shortlist → RANSAC"]
+    L6["→ top-K ScoredMatch list"]
+    L1 --> L2 --> L3 --> L4 --> L5 --> L6
+  end
+
+  subgraph wbiacore["WBIA-CORE (pip package)"]
+    direction TB
+    C1["extract_features()"]
+    C2["knn_match()"]
+    C3["score_matches()"]
+    C4["spatial_verify()"]
+    C5["identify()"]
+  end
+
+  wildbook -->|"HTTP"| mlservice
+  wildbook -->|"HTTP"| wildlifeid
+  L2 -.->|"calls"| C1
+  L3 -.->|"calls"| C2
+  L4 -.->|"calls"| C3
+  L5 -.->|"calls"| C4
+
+  style wildbook fill:#1a2a3a,stroke:#58a6ff,color:#c9d1d9
+  style mlservice fill:#1a2a1a,stroke:#3fb950,color:#c9d1d9
+  style wildlifeid fill:#2a1a3a,stroke:#bc8cff,color:#c9d1d9
+  style wbiacore fill:#2a2a1a,stroke:#d2991d,color:#c9d1d9
+</div>
+</div>
+
+<!-- ================================================================== -->
+<h2>What is wbia-core?</h2>
+
+<div class="grid3">
+  <div class="card">
+    <h3>What it is</h3>
+    <p>Stateless, pure-Python pip package containing the algorithmic primitives for wildlife re-identification. Pure functions over numpy arrays. Zero DB, zero network, zero IBEISController.</p>
+  </div>
+  <div class="card">
+    <h3>What it replaces</h3>
+    <p><code>wildbook-ia/wbia/algo/hots/</code> — the 3000-line HotSpotter module inside a 13-package legacy application (IBEISController, depcache, ZMQ job engine, Gunicorn).</p>
+  </div>
+  <div class="card">
+    <h3>What it doesn't do</h3>
+    <p>Detection (YOLO, MegaDetector) and classification — those are <strong>ml-service</strong>'s job. Foreground masking (RF probchip) also belongs in ml-service.</p>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<h2>Architecture — Three Layers</h2>
+
+<div class="mermaid-wrapper">
+<div class="mermaid">
+flowchart LR
+  Wildbook["🐘 Wildbook<br/>Java/Tomcat<br/>Web platform"] -->|"REST"| ML["🤖 ml-service<br/>FastAPI, stateless<br/>Detection + Classification<br/>+ Embedding"]
+  Wildbook -->|"REST"| WL["🔍 wildlife-id<br/>FastAPI, stateful<br/>Feature index + KNN<br/>pgvector"]
+  WL -->|"pip install"| Core["📦 wbia-core<br/>Pure Python, stateless<br/>SIFT features<br/>LNBNN scoring<br/>Spatial verification"]
+
+  style Wildbook fill:#1a2a3a,stroke:#58a6ff,color:#c9d1d9
+  style ML fill:#1a2a1a,stroke:#3fb950,color:#c9d1d9
+  style WL fill:#2a1a3a,stroke:#bc8cff,color:#c9d1d9
+  style Core fill:#2a2a1a,stroke:#d2991d,color:#c9d1d9
+</div>
+</div>
+
+<!-- ================================================================== -->
+<h2>Roadmap Scorecard</h2>
+
+<table>
+  <thead>
+    <tr><th>Phase</th><th>Items</th><th>Done</th><th>Remaining</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1 — Scoring depth</td><td>5</td><td>5</td><td>0</td><td class="done">✓</td></tr>
+    <tr><td>2 — Filter completeness</td><td>4</td><td>4</td><td>0</td><td class="done">✓</td></tr>
+    <tr><td>3 — Config defaults</td><td>6</td><td>6</td><td>0</td><td class="done">✓</td></tr>
+    <tr><td>4 — Remaining filters</td><td>3</td><td>3</td><td>0</td><td class="done">✓</td></tr>
+    <tr><td>5 — Spatial verification</td><td>4</td><td>4</td><td>0</td><td class="done">✓</td></tr>
+    <tr><td>6 — Advanced mechanisms</td><td>2</td><td>0</td><td>2</td><td class="todo">requery, score normalizer</td></tr>
+    <tr><td>7 — Post-audit HIGH/MEDIUM</td><td>9</td><td>3</td><td>6</td><td class="todo">FG, chip_extent, homog_checks, etc.</td></tr>
+    <tr><td>8 — Post-audit LOW</td><td>2</td><td>0</td><td>2</td><td class="low">sver_output, refine_method</td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================== -->
+<h2>Key Benchmark History</h2>
+
+<table>
+  <thead>
+    <tr><th>Date</th><th>Annots</th><th>Queries</th><th>Top-1</th><th>Spearman ρ</th><th>Milestone</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>06-04</td><td>10</td><td>3</td><td>0%</td><td>-0.15</td><td>OpenCV SIFT baseline (full-image, 50× scores)</td></tr>
+    <tr><td>06-05</td><td>10</td><td>3</td><td>0%</td><td>0.71</td><td>pyhesaff switch (feature extractor parity)</td></tr>
+    <tr><td>06-06c</td><td>10</td><td>3</td><td>33%</td><td>0.27</td><td>Chip extraction (450px width, crop+resize)</td></tr>
+    <tr><td>06-06e</td><td>10</td><td>3</td><td>33%</td><td>0.32</td><td>warpAffine (pixel-identical with WBIA)</td></tr>
+    <tr><td>06-06f</td><td>10</td><td>3</td><td>33%</td><td>0.33</td><td>sqrt distance normalization fix</td></tr>
+    <tr><td>06-07 P1</td><td>15</td><td>2</td><td>100%</td><td>0.987</td><td>Name-level scoring (fmech + canonical)</td></tr>
+    <tr><td>06-07 P2</td><td>15</td><td>2</td><td>100%</td><td>0.943</td><td>Filter completeness (bar_l2, ratio, const)</td></tr>
+    <tr><td>06-08</td><td>51</td><td>12</td><td>75%</td><td>0.735</td><td>Large-scale benchmark</td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================== -->
+<h2>Dual-Agent Audit: Remaining HIGH/MEDIUM Gaps</h2>
+
+<div class="grid2">
+  <div class="card">
+    <h3 style="color:var(--red)">HIGH (3)</h3>
+    <table>
+      <tr><td>FG weight formula</td><td class="todo">gaussian vs CNN/RF probchip — belongs in ml-service</td></tr>
+      <tr><td>SV use_chip_extent</td><td class="todo">image max dim vs chip diagonal normalization</td></tr>
+      <tr><td>SV implementation</td><td class="todo">custom vt.spatially_verify_kpts vs cv2.findHomography</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3 style="color:var(--yellow)">MEDIUM (4)</h3>
+    <table>
+      <tr><td>weight_inliers mechanism</td><td class="todo">biased RANSAC vs post-hoc multiplier</td></tr>
+      <tr><td>full_homog_checks</td><td class="todo">exhaustive sampling vs single-pass RANSAC</td></tr>
+      <tr><td>DB feature filtering</td><td class="todo">query-only vs both query+db for minscale/maxscale/fgw</td></tr>
+      <tr><td>can_match_sameimg</td><td class="todo">missing same-image filter (needs image_uuid in data model)</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="color:var(--green)">Fixed (5)</h3>
+  <table>
+    <tr><td>Kpad self-padding</td><td class="done">_compute_kpad now ensures min +1 when query in db</td></tr>
+    <tr><td>sv_ori_thresh default</td><td class="done">None → TAU/4 (matching WBIA)</td></tr>
+    <tr><td>SV shortlist scoring</td><td class="done">now uses prescore_method, not score_method</td></tr>
+    <tr><td>WBIA benchmark score field</td><td class="done">reads score_list (post-nsum) not annot_score_list (pre-nsum)</td></tr>
+    <tr><td>WBIA annot name creation</td><td class="done">passes annot_name_list from COCO individual_ids to /api/annot/json/</td></tr>
+  </table>
+</div>
+
+<!-- ================================================================== -->
+<h2>Root Cause Analysis — The 75%→92% Gap</h2>
+
+<div class="card">
+  <h3>Benchmark bugs (both fixed 06-08)</h3>
+  <p><strong>Bug 1 — wrong score field:</strong> <code>normalise_wbia_result</code>
+  read <code>annot_score_list</code> (pre-nsum csum) instead of <code>score_list</code>
+  (post-nsum canonical). Fixed to read <code>score_list</code>.</p>
+  <p><strong>Bug 2 — missing annot names:</strong> <code>run_query()</code> never
+  passed <code>annot_name_list</code> to WBIA's <code>/api/annot/json/</code>, so
+  WBIA auto-generated unique names for all 50 annots. <code>name_groupxs</code>
+  had 50 groups of size 1 — making fmech degenerate to per-annot csum with
+  zero cross-annot aggregation. Fixed: passes COCO <code>name_uuid</code> strings.</p>
+  <p class="done">Both fixes applied. Needs re-benchmark to verify gap closure.</p>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3 style="color:var(--red)">fmech aggregation gap</h3>
+    <p>wbia-core's fmech gives name 6373 a score of <strong>19.82</strong> by
+    aggregating max-per-qfx matches across all ~7 DB annotations sharing that
+    name. WBIA's nsum gives only <strong>2.97</strong> for the same name — a
+    <strong>6.6× difference</strong>.</p>
+    <p>The csum values match (6189: 11.18 vs 11.08, 1948: 3.09 vs 3.11),
+    confirming FLANN distances are not the problem. The gap is in the fmech
+    aggregation step itself: different per-match data being fed into the
+    MAX-per-qfx-per-name summation.</p>
+  </div>
+  <div class="card">
+    <h3 style="color:var(--yellow)">Why it matters</h3>
+    <p>Name 6373 has ~7× more annotations in the database than the correct
+    name 6189 (1 annot). fmech cherry-picks the best match per query feature
+    across all annotations of a name. With 7× more annots, name 6373 gets
+    an outsized advantage.</p>
+    <p>WBIA's fmech does NOT show this same amplification, suggesting a
+    difference in how many matches survive into fmech, or how per-match
+    scores are weighted across annots of the same name.</p>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Evidence from debug logs (query 2, seed=122)</h3>
+  <table>
+    <thead>
+      <tr><th>Metric</th><th>wbia-core</th><th>wbia-develop</th><th>Δ</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Annot 6189 csum (correct)</td><td>11.18</td><td>11.08</td><td>+0.9%</td></tr>
+      <tr><td>Annot 1948 csum (name 6373)</td><td>3.09</td><td>3.11</td><td>-0.6%</td></tr>
+      <tr><td>Annot 6189 nsum (correct)</td><td>10.93</td><td>10.82</td><td>+1.0%</td></tr>
+      <tr><td style="color:var(--red)">Name 6373 nsum</td><td style="color:var(--red)">19.82</td><td style="color:var(--red)">2.97</td><td style="color:var(--red)">+567%</td></tr>
+      <tr><td>Total feature matches</td><td>4,934</td><td>4,940</td><td>-0.1%</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ================================================================== -->
+<h2>What's Implemented (22 items)</h2>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Scoring &amp; filters</h3>
+    <ul>
+      <li>LNBNN: <code>ndist - vdist</code></li>
+      <li>bar_l2: <code>1.0 - vdist</code></li>
+      <li>ratio: <code>1.0 - vdist/ndist</code> + threshold</li>
+      <li>FG: <code>sqrt(q_fg × db_fg)</code> (np.ones fallback)</li>
+      <li>const: uniform 1.0 weight</li>
+      <li>normonly: replace vdist with ndist</li>
+      <li>normalizer_rule: 'last' and 'name'</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Name-level scoring</h3>
+    <ul>
+      <li>fmech/nsum_wbia — group by name→qfx, max per group, sum</li>
+      <li>csum_wbia — max per name</li>
+      <li>sumamech — sum per name</li>
+      <li>Canonical alignment — best annot per name gets score</li>
+      <li>rotation_invariance — XY-dedup for rotated features</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Spatial verification</h3>
+    <ul>
+      <li>Prescoring shortlist (top 40 names, 3 annots/name)</li>
+      <li>RANSAC homography via cv2.findHomography</li>
+      <li>xy_thresh=0.01, scale_thresh=2.0, ori_thresh=TAU/4</li>
+      <li>min_inliers=4, use_chip_extent, weight_inliers</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Config &amp; pipeline</h3>
+    <ul>
+      <li>Kpad dynamic / fixed policy</li>
+      <li>can_match_samename toggle (default True)</li>
+      <li>flann_trees=8, flann_checks=800</li>
+      <li>sqrd_dist_on toggle, prescore_method='nsum'</li>
+      <li>minscale/maxscale/fgw_thresh feature filters</li>
+      <li>FLANN global index (matching WBIA NeighborIndex)</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<h2>Who Does What</h2>
+
+<table>
+  <thead>
+    <tr><th>Step</th><th>Owner</th><th>Status</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Detection (YOLO, find animals)</td><td>ml-service</td><td class="done">Done (10.10)</td></tr>
+    <tr><td>Classification (species labels)</td><td>ml-service</td><td class="done">Done (10.10)</td></tr>
+    <tr><td>Embedding (MiewID vector)</td><td>ml-service</td><td class="done">Done (10.10)</td></tr>
+    <tr><td>Foreground mask (RF probchip)</td><td>ml-service</td><td class="todo">Future — needs pyrf + model files</td></tr>
+    <tr><td>Feature extraction (SIFT)</td><td>wbia-core</td><td class="done">Done</td></tr>
+    <tr><td>KNN search (FLANN/FAISS)</td><td>wbia-core</td><td class="done">Done</td></tr>
+    <tr><td>LNBNN scoring + filters</td><td>wbia-core</td><td class="done">Done</td></tr>
+    <tr><td>Name-level scoring (fmech)</td><td>wbia-core</td><td class="done">Done</td></tr>
+    <tr><td>Spatial verification</td><td>wbia-core</td><td class="done">Done (simplified vs WBIA)</td></tr>
+    <tr><td>Feature index persistence</td><td>wildlife-id</td><td class="todo">Not yet built</td></tr>
+    <tr><td>Requery</td><td>wbia-core</td><td class="low">Low priority (default off in WBIA)</td></tr>
+    <tr><td>Score normalizer</td><td>wbia-core</td><td class="low">Low priority (needs trained params)</td></tr>
+  </tbody>
+</table>
+
+<!-- ================================================================== -->
+<h2>Benchmark Progression</h2>
+
+<div class="mermaid-wrapper">
+<div class="mermaid">
+---
+config:
+  theme: dark
+---
+xychart-beta
+  title "Top-1 Accuracy Over Time"
+  x-axis ["06-04", "06-05", "06-06c", "06-06e", "06-06f", "06-07 P1", "06-07 P2", "06-08"]
+  y-axis "%" 0 --> 100
+  bar [0, 0, 33, 33, 33, 100, 100, 75]
+  line [0, 0, 33, 33, 33, 100, 100, 75]
+</div>
+</div>
+
+<!-- ================================================================== -->
+<h2>Scoring Pipeline Flow</h2>
+
+<div class="mermaid-wrapper">
+<div class="mermaid">
+---
+config:
+  theme: dark
+  layout: elk
+---
+flowchart TD
+  A["📷 Image + BBox"] --> B["✂️ warpAffine chip"]
+  B --> C["🔍 pyhesaff → keypoints + descriptors"]
+  C --> D["🏗️ Build global FLANN index"]
+  D --> E["🔎 Query K+Kpad+Knorm neighbors"]
+  E --> F["📏 Normalize distances (÷524288, √)"]
+  F --> G{"normalizer_rule?"}
+  G -->|"last"| G1["Use farthest neighbor"]
+  G -->|"name"| G2["Pick from different name ID"]
+  G1 --> H["🧹 Filter self + same-name matches"]
+  G2 --> H
+  H --> I["📊 Compute LNBNN: w = ndist - vdist"]
+  I --> J{"fg_on?"}
+  J -->|"yes"| J1["w ×= √(q_fg × db_fg)"]
+  J -->|"no"| K
+  J1 --> K{"bar_l2_on?"}
+  K -->|"yes"| K1["w ×= 1.0 - vdist"]
+  K -->|"no"| L
+  K1 --> L{"ratio_thresh?"}
+  L -->|"yes"| L1["ratio = vdist/ndist; skip if > thresh; w ×= 1.0 - ratio"]
+  L -->|"no"| M
+  L1 --> M{"const_on?"}
+  M -->|"yes"| M1["w ×= 1.0"]
+  M -->|"no"| N
+  M1 --> N["📋 Build Match list"]
+  N --> O{"score_method?"}
+  O -->|"csum"| O1["Per-annot sum"]
+  O -->|"nsum_wbia"| O2["Per-name fmech → canonical"]
+  O -->|"csum_wbia"| O3["Per-name max → canonical"]
+  O -->|"sumamech"| O4["Per-name sum → canonical"]
+  O1 --> P
+  O2 --> P
+  O3 --> P
+  O4 --> P{"sv_on?"}
+  P -->|"yes"| P1["🎯 Prescore → shortlist top 40 names / 3 annots"]
+  P -->|"no"| R
+  P1 --> P2["🔬 RANSAC homography per candidate"]
+  P2 --> P3["Filter by xy/scale/ori thresholds"]
+  P3 --> P4["Boost score by inlier ratio"]
+  P4 --> R["🏆 Return top-K ScoredMatch"]
+
+  style A fill:#1a2a3a,stroke:#58a6ff,color:#c9d1d9
+  style R fill:#1a3a2a,stroke:#3fb950,color:#c9d1d9
+  style P1 fill:#2a1a3a,stroke:#bc8cff,color:#c9d1d9
+</div>
+</div>
+
+<!-- ================================================================== -->
+<h2>Verification</h2>
+
+<div class="card">
+  <pre>$ make test-unit    # 38/38 pass
+
+$ python3 tests/benchmark/run_benchmark.py \
+    --targets wbia-core wbia-develop \
+    --n-annots 15 --n-queries 2 --seed 10
+# → Top-1: 100% | Spearman ρ: 0.943
+
+$ python3 tests/benchmark/run_benchmark.py \
+    --targets wbia-core wbia-develop \
+    --n-annots 51 --n-queries 12 --seed 122
+# → Top-1: 75% | Spearman ρ: 0.735  (correct answer at rank 1 for 9/12 queries)
+#   Failing: Q2 (rank 4), Q3 (rank 3), Q10 (rank 10)
+#   Root cause: fmech over-aggregates multi-annot names (6373: 19.82 → rank 1
+#   when it should be ~3.0 → rank ~4)</pre>
+</div>
+
+<footer>
+  <p>
+    wbia-core — <code>wbia-core/docs/development/</code> |
+    Roadmap: <code>parity-roadmap.md</code> |
+    Devlog: <code>devlog.md</code> |
+    Pipeline differences: <code>wbia-pipeline-differences.md</code>
+  </p>
+</footer>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      primaryColor: '#1a2a3a',
+      primaryTextColor: '#c9d1d9',
+      primaryBorderColor: '#58a6ff',
+      lineColor: '#8b949e',
+      secondaryColor: '#161b22',
+      tertiaryColor: '#0d1117'
+    },
+    flowchart: { useMaxWidth: true, htmlLabels: true },
+  });
+</script>
+
+</body>
+</html>

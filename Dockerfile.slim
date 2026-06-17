@@ -1,0 +1,26 @@
+FROM python:3.10-bookworm
+RUN apt-get update && apt-get install -yqq --no-install-recommends \
+libopencv-dev \
+&& rm -rf /var/lib/apt/lists/*
+
+COPY . /app
+WORKDIR /app
+
+# Build toolkits in dependency order.  pyhesaff uses WBIA's build_ext --inplace
+# workflow to match the compiled C++ output exactly.
+#ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.6
+#RUN pip3 install --no-cache-dir --no-deps ./wbia-utool/
+#ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.3
+#RUN pip3 install --no-cache-dir --no-deps ./wbia-vtool/
+#ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.0
+#RUN cd wbia-tpl-pyhesaff \
+#    && python3 setup.py build_ext --inplace \
+#    && pip3 install --no-cache-dir --no-deps -e . \
+#    && cd ..
+
+RUN pip3 install --no-cache-dir . flask
+
+ENV LD_LIBRARY_PATH /virtualenv/env3/lib:${LD_LIBRARY_PATH}
+
+EXPOSE 5000
+ENTRYPOINT ["scripts/entrypoints/server-entrypoint.sh"]

@@ -1,0 +1,19 @@
+services:
+  wbia:
+    image: wildme/wbia:latest
+    container_name: wbia-replay
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./testdata/images:/images:ro
+      - wbia-replay-data:/data/db
+      - ./patch_wbia_schema.py:/patch_wbia_schema.py:ro
+    environment:
+      - EXEC_PRIVILEGED=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    entrypoint: ["/bin/sh", "-c", "/virtualenv/env3/bin/python /patch_wbia_schema.py && exec /bin/entrypoint /virtualenv/env3/bin/python -m wbia.dev --dbdir /data/db --logdir /data/db/logs --web --containerized --production"]
+    stop_signal: SIGTERM
+
+volumes:
+  wbia-replay-data:

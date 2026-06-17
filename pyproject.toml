@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wbia-core"
+version = "0.1.0"
+description = "Core animal identification algorithm extracted from Wildbook IA"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24,<2",
+    "opencv-contrib-python-headless==4.7.0.72",
+    "pydantic>=2.0",
+    "wbia-pyflann>=4.0.4",
+    "wbia-pyhesaff>=4.0.0",
+]
+
+[project.optional-dependencies]
+faiss = ["faiss-cpu>=1.7.0"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: tests that take a long time (not run by default)",
+    "replay: tests that compare wbia-core against recorded WBIA fixtures",
+]

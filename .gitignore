@@ -1,0 +1,7 @@
+tests/test-dataset/
+test-run-results-*
+test-results/
+tests/benchmark/.chip_cache/
+.venv/
+*.pyc
+*.egg-info/
