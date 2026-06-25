@@ -1,10 +1,12 @@
 # wbia-core
 
+> Transition note: `wbia-core` is the prototype name. The target package is `hotspotter`, a reusable HotSpotter algorithm library. The current Flask sidecar is transitional and should move into `wildlife-id` as the production identification/index service. See `docs/development/hotspotter-transition.md`.
+
 Stateless HotSpotter wildlife re-identification pipeline — extracted from `wildbook-ia`, distributed as a pure-Python pip package.
 
 ## What it does
 
-`wbia-core` provides the algorithmic primitives for spot-pattern animal identification. Given a query image and a database of annotated images, it extracts Hessian-affine SIFT features, performs k-nearest-neighbor search, applies LNBNN (Local Naive Bayes Nearest Neighbor) scoring with configurable filters, runs name-level aggregation, and optionally applies spatial verification via RANSAC homography.
+`wbia-core` currently provides an end-to-end HotSpotter prototype for spot-pattern animal identification. The long-term `hotspotter` package should expose reusable algorithm primitives: chip helpers, Hessian-affine/SIFT feature extraction, LNBNN/name scoring, and spatial verification helpers. Persistent indexes, service APIs, candidate filtering, and production matching orchestration belong in `wildlife-id`.
 
 ```python
 from wbia_core import identify, IdentificationConfig, HotSpotterConfig
@@ -34,7 +36,8 @@ What it does **not** replace: detection (YOLO/MegaDetector), classification, emb
 
 - **Stateless.** Pure functions over numpy arrays. No DB, no network, no `IBEISController`.
 - **Deterministic.** Same `(image, config)` → same features, every time.
-- **Single global FLANN index** over all database descriptors (including the query), matching WBIA's `NeighborIndex` behaviour.
+- **Package-first.** Target boundary is a reusable `hotspotter` library; sidecar/API code is transitional.
+- **Single global FLANN index** over database descriptors (query excluded), matching WBIA's `NeighborIndex` behaviour.
 - **Configurable filter chain.** LNBNN, bar_l2, ratio, FG, const, and normonly filters combine multiplicatively.
 - **Name-level scoring.** fmech (nsum), max-per-name (csum_wbia), per-name sum (sumamech), with canonical alignment.
 - **Spatial verification.** RANSAC homography with prescore shortlisting, xy/scale/ori threshold filtering.
@@ -133,6 +136,8 @@ See `wbia_core/config.py` for the full list.
 
 ## API
 
+The current high-level API is useful for parity work, but it is broader than the target `hotspotter` package boundary. Future cleanup should keep reusable feature/scoring primitives here and move service/index orchestration to `wildlife-id`.
+
 ### `identify(query_index, database, config) → list[ScoredMatch]`
 
 Run the full identification pipeline for one query against a database of annotated images. Builds a single global FLANN index, applies LNBNN scoring with configurable filters, runs name-level aggregation, and optionally spatial verification.
@@ -165,6 +170,7 @@ score field and missing annotation name assignment. After fixes,
 top-1 agrees on 11/12 queries and scores match within 1%.
 
 See `docs/development/`:
+- `hotspotter-transition.md` — current boundary checklist for the `hotspotter` rename and `wildlife-id` split
 - `parity-analysis.md` — investigation history + benchmark artifact analysis
 - `parity-roadmap.md` — implementation plan with verification results
 - `wbia-pipeline-differences.md` — per-section WBIA comparison

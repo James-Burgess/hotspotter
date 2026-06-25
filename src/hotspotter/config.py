@@ -19,7 +19,9 @@ class SiftConfig(BaseModel):
 class HotSpotterConfig(BaseModel):
     knn: int = Field(default=4, ge=1, description="Number of nearest neighbors")
     knorm: int = Field(
-        default=1, ge=1, description="Number of nearest-neighbor normalizer columns"
+        default=1,
+        ge=1,
+        description="Number of normalizer neighbor columns. WBIA default: 1.",
     )
     kpad: int = Field(
         default=0, ge=0, description="Extra K columns for self-filtering buffer"
@@ -75,7 +77,6 @@ class HotSpotterConfig(BaseModel):
         description="Minimum foreground weight for feature filtering before FLANN query.",
     )
     sv_on: bool = Field(default=True, description="Enable spatial verification")
-    # Spatial verification shortlisting (matching WBIA defaults)
     sv_n_name_shortlist: int = Field(default=40, ge=1)
     sv_n_annot_per_name: int = Field(default=3, ge=1)
     sv_xy_thresh: float | None = Field(default=0.01, gt=0.0)
@@ -92,11 +93,9 @@ class HotSpotterConfig(BaseModel):
     lnbnn_ratio: float = Field(default=1.0, gt=0.0)
     fg_on: bool = Field(default=True)
 
-    # Additional WBIA filters (defaults match WBIA)
     bar_l2_on: bool = Field(default=False)
     const_on: bool = Field(default=False)
 
-    # FLANN index parameters (matching WBIA defaults)
     flann_algorithm: str = Field(default="kdtree")
     flann_trees: int = Field(default=8)
     flann_random_seed: int = Field(default=42)

@@ -1,4 +1,4 @@
-"""CoreTargetRunner — sends requests to a wbia-core sidecar via single-shot POST."""
+"""CoreTargetRunner — sends requests to a hotspotter sidecar via single-shot POST."""
 
 from __future__ import annotations
 

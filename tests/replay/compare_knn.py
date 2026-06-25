@@ -15,8 +15,8 @@ import cv2
 import numpy as np
 from pyflann import FLANN
 
-from wbia_core.config import SiftConfig
-from wbia_core.features import extract_features
+from hotspotter.config import SiftConfig
+from hotspotter.features import extract_features
 
 
 def main():

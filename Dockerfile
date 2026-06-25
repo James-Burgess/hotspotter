@@ -45,9 +45,31 @@ RUN cd wbia-tpl-pyhesaff \
     && pip3 install --no-cache-dir --no-deps -e . \
     && cd ..
 
-RUN pip3 install --no-cache-dir . flask
+RUN pip3 install --no-cache-dir \
+        'numpy>=1.24,<2' \
+        'opencv-contrib-python-headless==4.7.0.72' \
+        'pydantic>=2.0' \
+        'scipy>=1.10,<2' \
+        'wbia-pyflann>=4.0.4' \
+        annoy \
+        delorean \
+        gitpython \
+        lockfile \
+        matplotlib \
+        networkx \
+        ordered-set \
+        pandas \
+        parse \
+        Pillow \
+        pint \
+        psutil \
+        pyarrow \
+        pyparsing \
+        requests \
+        scikit-image \
+        scikit-learn \
+        statsmodels \
+        ubelt \
+    && pip3 install --no-cache-dir --no-deps .
 
 ENV LD_LIBRARY_PATH /virtualenv/env3/lib:${LD_LIBRARY_PATH}
-
-EXPOSE 5000
-ENTRYPOINT ["scripts/entrypoints/server-entrypoint.sh"]

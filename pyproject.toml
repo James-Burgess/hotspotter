@@ -3,14 +3,15 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "wbia-core"
+name = "hotspotter"
 version = "0.1.0"
-description = "Core animal identification algorithm extracted from Wildbook IA"
+description = "Reusable HotSpotter algorithm library"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24,<2",
     "opencv-contrib-python-headless==4.7.0.72",
     "pydantic>=2.0",
+    "scipy>=1.10,<2",
     "wbia-pyflann>=4.0.4",
     "wbia-pyhesaff>=4.0.0",
 ]
@@ -18,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 faiss = ["faiss-cpu>=1.7.0"]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+trace = ["pandas>=2.0", "pyarrow>=10.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

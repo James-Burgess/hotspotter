@@ -18,10 +18,10 @@ import warnings
 
 import numpy as np
 
-from wbia_core.config import HotSpotterConfig, IdentificationConfig, SiftConfig
-from wbia_core.data import AnnotatedImage
-from wbia_core.features import extract_features
-from wbia_core.pipeline import identify
+from hotspotter.config import HotSpotterConfig, IdentificationConfig, SiftConfig
+from hotspotter.data import AnnotatedImage
+from hotspotter.features import extract_features
+from hotspotter.pipeline import identify
 
 FIXTURES_DIR = pathlib.Path("/tmp/fixtures")
 

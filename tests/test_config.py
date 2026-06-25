@@ -1,9 +1,9 @@
-"""Tests for wbia_core.config."""
+"""Tests for hotspotter.config."""
 
 import pytest
 from pydantic import ValidationError
 
-from wbia_core.config import HotSpotterConfig, IdentificationConfig, SiftConfig
+from hotspotter.config import HotSpotterConfig, IdentificationConfig, SiftConfig
 
 
 class TestSiftConfig:
@@ -21,6 +21,7 @@ class TestHotSpotterConfig:
     def test_defaults(self):
         c = HotSpotterConfig()
         assert c.knn == 4
+        assert c.knorm == 1
         assert c.score_method == "csum"
         assert c.sv_on is True
 

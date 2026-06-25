@@ -1,11 +1,11 @@
-"""Tests for wbia_core.spatial — uses exact correspondences."""
+"""Tests for hotspotter.spatial — uses exact correspondences."""
 
 import uuid
 
 import numpy as np
 
-from wbia_core.data import AnnotatedImage, FeatureSet, ScoredMatch
-from wbia_core.spatial import spatial_verify
+from hotspotter.data import AnnotatedImage, FeatureSet, ScoredMatch
+from hotspotter.spatial import spatial_verify
 
 
 def _make_features(n: int) -> FeatureSet:
@@ -62,38 +62,46 @@ class TestSpatialVerify:
                 bbox=(0, 0, 50, 50),
             )
         ]
+        xs = np.array([0.0, 1.0, 2.0, 0.0, 1.0, 2.0, 0.5, 1.5], dtype=np.float32)
+        ys = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0], dtype=np.float32)
         q_kp = np.column_stack(
             [
-                np.array([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32),
-                np.array([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32),
-                np.ones(5, dtype=np.float32),
-                np.zeros(5, dtype=np.float32),
-                np.zeros(5, dtype=np.float32),
-                np.zeros(5, dtype=np.float32),
+                xs,
+                ys,
+                np.ones(8, dtype=np.float32),
+                np.zeros(8, dtype=np.float32),
+                np.ones(8, dtype=np.float32),
+                np.zeros(8, dtype=np.float32),
             ]
         )
         query_features = FeatureSet(
             keypoints=q_kp,
-            descriptors=np.random.randint(0, 256, (5, 128), dtype=np.uint8),
+            descriptors=np.random.randint(0, 256, (8, 128), dtype=np.uint8),
         )
 
-        # db_kp at indices 2, 3, 4, 5 — same (x,y) as query 0,1,2,3
+        # db_kp at indices 2..9 — same keypoints as query 0..7
         db_kp = db[0].features.keypoints
-        db_kp[2, :2] = [0.0, 0.0]
-        db_kp[3, :2] = [1.0, 1.0]
-        db_kp[4, :2] = [2.0, 2.0]
-        db_kp[5, :2] = [3.0, 3.0]
+        db_kp[2:10] = q_kp
 
         scored = [
             ScoredMatch(
                 annot_uuid=db[0].annot_uuid,
                 name_uuid=None,
                 score=0.5,
-                num_matches=4,
-                correspondences=[(0, 2), (1, 3), (2, 4), (3, 5)],
+                num_matches=8,
+                correspondences=[
+                    (0, 2),
+                    (1, 3),
+                    (2, 4),
+                    (3, 5),
+                    (4, 6),
+                    (5, 7),
+                    (6, 8),
+                    (7, 9),
+                ],
             ),
         ]
-        result = spatial_verify(scored, query_features, db, min_inliers=3)
+        result = spatial_verify(scored, query_features, db, min_inliers=4)
         assert result[0].sv_inliers > 0
         assert result[0].sv_homography is not None
 

@@ -18,9 +18,5 @@ WORKDIR /app
 #    && pip3 install --no-cache-dir --no-deps -e . \
 #    && cd ..
 
-RUN pip3 install --no-cache-dir . flask
+RUN pip3 install --no-cache-dir .
 
-ENV LD_LIBRARY_PATH /virtualenv/env3/lib:${LD_LIBRARY_PATH}
-
-EXPOSE 5000
-ENTRYPOINT ["scripts/entrypoints/server-entrypoint.sh"]
