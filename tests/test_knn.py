@@ -1,9 +1,9 @@
-"""Basic tests for wbia_core.knn (requires pyflann or faiss)."""
+"""Basic tests for hotspotter.knn (requires pyflann or faiss)."""
 
 import numpy as np
 
-from wbia_core.data import FeatureSet
-from wbia_core.knn import build_index, query_index
+from hotspotter.data import FeatureSet
+from hotspotter.knn import build_index, query_index
 
 
 def _make_features(n: int = 50) -> FeatureSet:

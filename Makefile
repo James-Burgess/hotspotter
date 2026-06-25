@@ -1,13 +1,15 @@
-.PHONY: build test test-unit test-benchmark test-benchmark-runner test-replay test-replay-live test-all run shell clean
+.PHONY: build test test-unit test-benchmark test-benchmark-runner test-replay test-replay-live test-parity test-all shell clean
 
-IMAGE := wbia-core:latest
+IMAGE := hotspotter:latest
 TEST_DATASET := $(CURDIR)/tests/test-dataset
+ORACLE ?= $(CURDIR)/../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-105210
+PARITY_RHO ?= 0.97
 
 # ---- Build ----
 build:
 	docker build -t $(IMAGE) .
 
-# ---- Unit tests (38 tests, <2s, self-contained) ----
+# ---- Unit tests (42 tests, <2s, self-contained) ----
 test: test-unit
 test-unit:
 	docker run --rm --entrypoint bash $(IMAGE) -c \
@@ -50,17 +52,16 @@ test-all:
 		--entrypoint bash $(IMAGE) -c \
 		"pip install pytest -q && python -m pytest tests/ -v --ignore=tests/benchmark/test_runner.py -k 'not TestLiveWbiaComparison'"
 
-# ---- Run sidecar server ----
-run: server
-server:
-	docker run --rm -d --name wbia-core -p 5000:5000 $(IMAGE)
-
 # ---- Shell in container ----
 shell:
+
+# ---- Parity comparison against WBIA oracle ----
+test-parity:
+	python3 scripts/compare_to_wbia.py $(ORACLE) --passing-rho $(PARITY_RHO)
 	docker run --rm -it \
 		-v $(TEST_DATASET):/app/tests/test-dataset \
 		--entrypoint bash $(IMAGE)
 
 # ---- Clean ----
 clean:
-	-docker rm -f wbia-core 2>/dev/null
+	-docker rm -f hotspotter 2>/dev/null

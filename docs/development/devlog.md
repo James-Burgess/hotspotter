@@ -1,7 +1,210 @@
-# wbia-core Development Log
+# hotspotter Development Log
 
 This file tracks design decisions, progress, and open questions as the
 package evolves.  It complements the formal ADRs in `decisions/`.
+
+---
+
+## 2026-06-25 — Phase 2: FLANN index, descriptor order, chip fix, trace alignment
+
+### What was done
+
+1. **FLANN index — query excluded**: Changed `identify()` to build the FLANN
+   index over database descriptors only (query excluded), matching WBIA's
+   `neighbor_index.py` which indexes `qreq_.daids` (database aids only, not
+   qaids). Removed self-match stripping. Updated AGENTS.md directive which
+   was previously incorrect.
+
+2. **Descriptor stacking order**: Changed `run_fixture.py` to build the
+   database in batch-file order (not queries-first). This aligns the FLANN
+   descriptor stacking order with WBIA's aid/bbox order. The trace query
+   index was decoupled from the database index via a new `trace_query_index`
+   parameter on `identify()`.
+
+3. **Chip extraction — negative bbox fix**: Removed bbox coordinate clamping
+   in `extract_chip()`. Raw bbox coordinates (including negative x/y) now
+   pass directly to `cv2.warpAffine` with `BORDER_CONSTANT`, matching WBIA's
+   `extract_chip_from_img`.
+
+4. **`_compute_kpad` — can_match_samename guard**: Kpad no longer counts
+   self (query excluded from FLANN). Same-name annotations counted only
+   when `can_match_samename=False`.
+
+5. **Trace chips schema**: `chip_fpath` and `chip_size` columns (replacing
+   `width`/`height`/`chip_array`), WBIA-compatible.
+
+### Key metric: Neighbor ID match 73% (was 7.2%)
+
+After the descriptor ordering fix, neighbor IDs match at 72.98% (was 7.19%
+before). Column 0 (closest neighbor) matches at 90.4%, dropping to 57.7%
+at column 4 (normalizer). The remaining 27% is FLANN non-determinism from
+different pyflann/numpy versions across Docker images.
+
+Neighbor distances correlate at Pearson r=0.9789 (computed manually; the
+comparer can't load hotspotter npy files so it reports 0.00).
+
+### Feature verification
+
+After the chip fix and descriptor ordering fix:
+- **19 of 19 annotations** have identical keypoint counts
+- **36,423 of 36,423 descriptors** are bit-identical
+- **36,423 of 36,423 keypoints** are bit-identical (float32)
+- PyHesaff version compatible between hotspotter and WBIA
+
+### Parity results (hotspotter vs WBIA nightly)
+
+Oracle: `../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-173226/`.
+
+| Metric | Value | Notes |
+|---|---|---|
+| Final name score ρ | **0.3031** (threshold 0.97) | FAIL |
+| Neighbor ID match | **72.98%** | 10× improvement from 7.2% |
+| Actual neighbor dist r | **0.9789** | Comparer reports 0.00 (npy path bug) |
+| Feature match Jaccard | 0.0993 | Improved from 0.0428 |
+| SV pruning agreement | 0.4762 | Still half of annots pruned differently |
+| All features identical | ✓ | 36,423/36,423 descriptors match |
+| AID alignment | ✓ | 0-based HS maps 1:1 to 1-based WBIA |
+| Neighbor shapes | ✓ | Both [N,5] matching WBIA |
+
+The ρ stayed at 0.3031 because neighbor-match doesn't directly translate to
+score-match — the scoring pipeline amplifies small neighbor differences
+through LNBNN → csum → name aggregation → SV.  The remaining gap is
+concentrated in: FLANN non-determinism (27% neighbor divergence), SV
+semantics (47.6% agreement), and comparer npy path resolution.
+
+### Verification
+
+```bash
+make build
+make test-unit      # 42/42 pass
+make test-parity ORACLE=../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-173226
+```
+
+### Files changed
+
+- `src/hotspotter/pipeline.py` — query exclusion, _compute_kpad fix, trace_query_index
+- `src/hotspotter/chip.py` — negative bbox fix
+- `src/hotspotter/trace.py` — trace_chips_and_features, chip_fpath/chip_size
+- `scripts/run_fixture.py` — batch-order database, trace_query_index
+- `scripts/compare_to_wbia.py` — Knorm2, kpad_fixed_0 configs, setdefault
+- `AGENTS.md` — corrected FLANN index directive
+- `README.md` — updated index description
+- `tests/test_pipeline.py` — updated kpad test expectation
+- `patches/wbia_record_oracle_incontainer.py` — Knorm2, kpad_fixed_0 configs
+- `scripts/record_wbia_oracle.py` — Knorm2, kpad_fixed_0 configs, Knorm0 removed
+
+---
+
+## 2026-06-25 — Phase 2: first WBIA parity-gap fixes
+
+### What was done
+
+1. **Knorm config**: Added `HotSpotterConfig.knorm` with validation `ge=1` and
+   changed `identify()` to use `hs.knorm` instead of a hardcoded value.
+   `Knorm=0` remains unsupported because WBIA crashes on that parameter.
+
+2. **Parity config mapping**: `scripts/compare_to_wbia.py` now forces
+   `kpad_policy="dynamic"` and `knorm=1` across the seven canonical parity
+   configs, matching the intended WBIA oracle setup more closely.
+
+3. **Spatial verification backend**: Replaced the local OpenCV-only
+   `cv2.findHomography` implementation with a wrapper around
+   `vtool.spatial_verification.spatially_verify_kpts()`. Docker now preserves
+   vendored `wbia-vtool 4.0.3` and installs the runtime deps needed for
+   `vtool.spatial_verification`.
+
+4. **Feature-match trace format**: Hotspotter `final_scores` now writes WBIA-style
+   `fm_list` metadata: one `Nx2` `[qfx, dfx]` array per scored chipmatch, saved as
+   `.npy` sidecars with inline `values` fallback for host-side comparison.
+
+5. **Tests adjusted**: Spatial tests now exercise vtool/WBIA homography inlier
+   behavior. Pipeline tests cover `knorm` and dynamic Kpad behavior.
+
+### Parity results (hotspotter vs WBIA nightly)
+
+Oracle: `../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-144646/`.
+
+| Metric | Value | Notes |
+|---|---|---|
+| Final name score ρ | **0.2683** (threshold 0.97) | FAIL |
+| Feature match Jaccard | 0.0428 | Now computable from `fm_list` sidecars |
+| SV pruning agreement | 0.5000 | Still half of annots pruned differently |
+| Neighbor dist Pearson r | 0.0000 | Shape/data mismatch still blocks useful comparison |
+| Descriptor cosine | 0.0000 | Row-count mismatch (19 vs 1) |
+
+The first Phase 2 changes improved observability and removed known local-only
+implementation differences, but did not yet improve final rank correlation. The
+remaining gap is now concentrated around effective neighbor configuration,
+match-set construction, SV score-update details, row structuring, and final score
+trace semantics.
+
+### Verification
+
+```bash
+make build
+make test-unit      # 41/41 pass
+make test-parity ORACLE=../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-144646
+```
+
+`git diff --check` still reports a pre-existing unrelated warning in
+`Dockerfile.slim:22` for a blank line at EOF.
+
+---
+
+## 2026-06-25 — Phase 1: Package rename, sidecar removal, trace infrastructure
+
+### What was done
+
+1. **Rename**: `wbia_core` → `hotspotter` (`src/hotspotter/`). `wbia_core` kept
+   as compat shim. All imports updated in tests, scripts, benchmarks.
+   `pyproject.toml` name/description updated. `make_sver_shortlist` import bug
+   fixed.
+
+2. **Chip extraction**: Moved `_compute_affine_matrix()` and `_extract_chip()`
+   from `sidecar/api.py` into `hotspotter.chip`. Public API:
+   `hotspotter.chip.extract_chip(img, bbox)`.
+
+3. **Sidecar removed**: `sidecar/api.py` deleted. Flask removed from
+   Dockerfile. Image is now a pure library with bash as default command.
+   `scripts/run_fixture.py` replaces sidecar for testing.
+
+4. **Parquet trace writer**: `hotspotter.trace` writes WBIA-compatible parquet
+   + `.npy` sidecars when `HOTSPOTTER_TRACE_DIR` is set. 10 stages traced:
+   chips, annotations, features_keypoints, features_descriptors,
+   nearest_neighbors, baseline_neighbor_filter, neighbor_weights,
+   chipmatches_pre_sv, chipmatches_post_sv, final_scores.
+
+5. **Naming convention**: Both WBIA monkeypatch and hotspotter trace use
+   `{config_label}_{query_index:06d}.parquet` with `trace_manifest.json`
+   at the run root. 4 WBIA images re-recorded with new naming (302 parquet
+   files each).
+
+6. **Comparison tool**: `scripts/compare_to_wbia.py` runs all 7 configs,
+   compares hotspotter traces against WBIA oracle via
+   `compare_wbia_oracles.py`. Makefile target: `make test-parity`.
+
+### Parity results (hotspotter vs WBIA nightly)
+
+| Metric | Value | Notes |
+|---|---|---|
+| Final name score ρ | **0.27** (threshold 0.97) | FAIL |
+| SV pruning agreement | 0.50 | Half of annots pruned differently |
+| Neighbor dist Pearson r | 0.00 | Kpad shape mismatch prevents computation |
+| Descriptor cosine | 0.00 | Row-count mismatch (19 vs 1) |
+
+Root cause: Kpad=0 fixed in hotspotter vs Kpad=1 dynamic in WBIA causes
+neighbor array shape mismatch (`[N, K+1]` vs `[N, K+2]`), cascading to
+different feature matches, SV results, and final scores.
+
+Full findings in `docs/development/hotspotter-parity-discrepancies.md`.
+
+### Verification
+
+```bash
+make test-unit      # 38/38 pass
+make test-replay    # 84/84 pass
+make test-parity    # FAIL (ρ=0.27, expected at this stage)
+```
 
 ---
 

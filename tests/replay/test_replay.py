@@ -29,9 +29,9 @@ import uuid as uuid_mod
 import numpy as np
 import pytest
 
-from wbia_core.config import HotSpotterConfig, IdentificationConfig
-from wbia_core.data import AnnotatedImage, FeatureSet
-from wbia_core.pipeline import identify
+from hotspotter.config import HotSpotterConfig, IdentificationConfig
+from hotspotter.data import AnnotatedImage, FeatureSet
+from hotspotter.pipeline import identify
 
 from .conftest import FIXTURES_DIR
 
@@ -184,8 +184,8 @@ class TestReplayAgainstWbiaCore:
         config = IdentificationConfig(
             hotspotter=HotSpotterConfig(sv_on=False, num_return=10)
         )
-        wbia_core_results = identify(query_idx, database, config)
-        core_top = [str(r.annot_uuid) for r in wbia_core_results]
+        hotspotter_results = identify(query_idx, database, config)
+        core_top = [str(r.annot_uuid) for r in hotspotter_results]
 
         overlap = set(wbia_top) & set(core_top)
         assert (
@@ -265,8 +265,8 @@ class TestLiveWbiaComparison:
             _wbia_healthy,
         )
         import uuid as uuid_mod
-        from wbia_core.features import extract_features
-        from wbia_core.config import SiftConfig
+        from hotspotter.features import extract_features
+        from hotspotter.config import SiftConfig
         import cv2 as _cv2
 
         # --- 1. Generate a small test set ---
@@ -360,8 +360,8 @@ def _build_database_from_fixture(fx: dict) -> list[AnnotatedImage]:
 
     Requires ``wbia-pyhesaff`` (hard dependency of wbia-core).
     """
-    from wbia_core.features import extract_features
-    from wbia_core.config import SiftConfig
+    from hotspotter.features import extract_features
+    from hotspotter.config import SiftConfig
     import cv2 as _cv2
 
     sift_cfg = SiftConfig()

@@ -1,12 +1,12 @@
-"""Tests for wbia_core.scoring (focused, no faiss needed)."""
+"""Tests for hotspotter.scoring (focused, no faiss needed)."""
 
 import uuid
 
 import numpy as np
 import pytest
 
-from wbia_core.data import AnnotatedImage, FeatureSet
-from wbia_core.scoring import (
+from hotspotter.data import AnnotatedImage, FeatureSet
+from hotspotter.scoring import (
     build_matches,
     filter_self_matches,
     score_matches,
@@ -121,7 +121,7 @@ class TestScoreMatches:
             _make_annot(uuid.uuid4(), n_feats=5),
         ]
         name = uuid.uuid4()
-        from wbia_core.data import Match
+        from hotspotter.data import Match
 
         matches = [
             Match(qfx=0, daid=0, dfx=1, dist=1.0, name_uuid=name),
@@ -140,7 +140,7 @@ class TestScoreMatches:
 
     def test_csum(self):
         db = [_make_annot(uuid.uuid4(), n_feats=5)]
-        from wbia_core.data import Match
+        from hotspotter.data import Match
 
         matches = [
             Match(qfx=0, daid=0, dfx=0, dist=1.0, name_uuid=None),

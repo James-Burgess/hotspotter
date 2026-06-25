@@ -1,11 +1,11 @@
-"""Tests for wbia_core.data."""
+"""Tests for hotspotter.data."""
 
 import uuid
 
 import numpy as np
 import pytest
 
-from wbia_core.data import AnnotatedImage, FeatureSet, Match, ScoredMatch
+from hotspotter.data import AnnotatedImage, FeatureSet, Match, ScoredMatch
 
 
 def _make_features(n: int = 10) -> FeatureSet:
