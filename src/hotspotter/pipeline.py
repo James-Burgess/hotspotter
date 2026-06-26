@@ -87,8 +87,8 @@ def identify(
     )
 
     if ctx is not None:
-        ctx.trace_annotations(database)
-        ctx.trace_chips_and_features(database)
+        ctx.trace_annotations(database, query_annot_index)
+        ctx.trace_chips_and_features(database, query_annot_index)
 
     if config.pipeline != "HotSpotter":
         raise NotImplementedError(
@@ -172,12 +172,16 @@ def identify(
     dlog.stage_global_index(db_feature_sets, annot_of_desc)
     dlog.stage_raw_dists(raw_dists, raw_labels)
 
-    if ctx is not None:
-        ctx.trace_neighbors(query_annot_index, raw_labels, raw_dists)
-
     # Post-hoc distance normalisation (WBIA VEC_PSEUDO_MAX_DISTANCE_SQRD)
+    # WBIA divides raw SSE by 524288 inside NeighborIndex.knn() and traces
+    # the normalized (squared) distances. sqrt is applied later in
+    # weight_neighbors when sqrd_dist_on=False.
     max_distance_sqrd = 2.0 * (512.0**2.0)
     dists = (np.maximum(raw_dists, 0.0) / max_distance_sqrd).astype(np.float64)
+
+    if ctx is not None:
+        ctx.trace_neighbors(query_annot_index + 1, raw_labels, dists.astype(np.float32))
+
     if not hs.sqrd_dist_on:
         dists = np.sqrt(dists)
     dlog.stage_dist_norm(dists)
@@ -218,7 +222,7 @@ def identify(
     )
 
     if ctx is not None:
-        ctx.trace_baseline_filter(invalid)
+        ctx.trace_baseline_filter(query_annot_index + 1, ~invalid)
 
     # ---- 3b. Name-normalizer validity (WBIA normalizer_rule='name') ----
     normalizer_valid: np.ndarray | None = None
@@ -303,7 +307,7 @@ def identify(
     dlog.stage_lnbnn_weights(lnbnn_weights_list)
 
     if ctx is not None:
-        ctx.trace_neighbor_weights(lnbnn_weights_list)
+        ctx.trace_neighbor_weights(query_annot_index + 1, lnbnn_weights_list)
 
     # ---- 6. Score ----
     _wbia_methods = {"csum_wbia", "nsum_wbia", "sumamech"}
@@ -340,23 +344,48 @@ def identify(
             _annot_to_matches[daid] = (csum_val, sm.num_matches)
         dlog.stage_match_to_annot(_annot_to_matches)
 
+    _uuid_to_daid = {ann.annot_uuid: i + 1 for i, ann in enumerate(database)}
+    _name_to_nid: dict = {}
+    _next_nid = 1
+    for ann in database:
+        if ann.name_uuid is not None and ann.name_uuid not in _name_to_nid:
+            _name_to_nid[ann.name_uuid] = _next_nid
+            _next_nid += 1
+
+    _trace_qaid = query_annot_index + 1
+    _trace_qnid = (
+        _name_to_nid.get(database[query_annot_index].name_uuid, -1)
+        if database[query_annot_index].name_uuid
+        else -1
+    )
+
     if ctx is not None:
-        _pre_daids = [str(sm.annot_uuid) for sm in scored]
-        _pre_dnids = [str(sm.name_uuid) if sm.name_uuid else None for sm in scored]
-        _pre_ascores = np.array([sm.score for sm in scored], dtype=np.float64)
-        _pre_nscores = np.array([sm.score for sm in scored], dtype=np.float64)
-        _pre_slist = np.array([sm.score for sm in scored], dtype=np.float64)
-        _fm_list = _fm_arrays_for_scored(scored, matches, database)
+        _pre_daids = np.array(
+            [_uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64
+        )
+        _pre_dnids = np.array(
+            [
+                _name_to_nid.get(sm.name_uuid, -1) if sm.name_uuid else -1
+                for sm in scored
+            ],
+            dtype=np.int64,
+        )
+        _pre_sort = np.argsort(_pre_daids)
+        _pre_daids = _pre_daids[_pre_sort]
+        _pre_dnids = _pre_dnids[_pre_sort]
+        _fm_list_pre = _fm_arrays_for_scored(
+            [scored[i] for i in _pre_sort], matches, database
+        )
         ctx.trace_chipmatches(
             "chipmatches_pre_sv",
-            query_annot_index,
-            database[query_annot_index].name_uuid,
+            _trace_qaid,
+            _trace_qnid,
             _pre_daids,
-            _pre_dnids,
-            _pre_ascores,
-            _pre_nscores,
-            _pre_slist,
-            _fm_list,
+            None,
+            None,
+            None,
+            None,
+            _fm_list_pre,
             fsv_list=None,
         )
 
@@ -370,7 +399,7 @@ def identify(
             n_names=hs.sv_n_name_shortlist,
             n_annots_per_name=hs.sv_n_annot_per_name,
         )
-        sver_candidates = spatial_verify(
+        sver_candidates, sv_results = spatial_verify(
             sver_candidates,
             query_features,
             database,
@@ -380,67 +409,148 @@ def identify(
             ori_thresh=hs.sv_ori_thresh,
             use_chip_extent=hs.sv_use_chip_extent,
             weight_inliers=hs.sv_weight_inliers,
+            sver_output_weighting=hs.sv_sver_output_weighting,
         )
-        sv_map = {sm.annot_uuid: sm for sm in sver_candidates if sm.sv_inliers > 0}
-        for sm in scored:
-            if sm.annot_uuid in sv_map:
-                replaced = sv_map[sm.annot_uuid]
-                sm.sv_inliers = replaced.sv_inliers
-                sm.sv_homography = replaced.sv_homography
-                sm.score = replaced.score
 
-    if hs.sv_on and hs.prescore_method != hs.score_method:
-        if hs.score_method in _wbia_methods:
+        if sv_results:
+            match_lookup: dict[tuple[int, int, int], Match] = {}
+            for m in matches:
+                match_lookup[(m.daid, m.qfx, m.dfx)] = m
+
+            sv_matches: list[Match] = []
+            for annot_uuid, (
+                inlier_qfxs,
+                inlier_dfxs,
+                weights,
+            ) in sv_results.items():
+                daid = next(
+                    i for i, a in enumerate(database) if a.annot_uuid == annot_uuid
+                )
+                for qfx, dfx, w in zip(inlier_qfxs, inlier_dfxs, weights, strict=True):
+                    orig = match_lookup.get((daid, qfx, dfx))
+                    if orig is None:
+                        continue
+                    sv_w = float(w) if hs.sv_sver_output_weighting else 1.0
+                    sv_matches.append(
+                        Match(
+                            qfx=qfx,
+                            daid=daid,
+                            dfx=dfx,
+                            dist=orig.dist * sv_w,
+                            name_uuid=orig.name_uuid,
+                            sv_weight=sv_w,
+                        )
+                    )
+
             annot_uuids = [a.annot_uuid for a in database]
             annot_name_map = {
                 a.annot_uuid: a.name_uuid for a in database if a.name_uuid is not None
             }
-            _, canonical = score_matches_with_names(
-                matches, annot_uuids, annot_name_map, hs.score_method
-            )
-            scored = _canonical_to_scoredmatches(
-                canonical, matches, database, annot_uuids
-            )
-        else:
-            scored = score_matches(matches, database, hs.score_method)
+            if hs.score_method in _wbia_methods:
+                qk = query_features.keypoints if hs.rotation_invariance else None
+                _, sv_canonical = score_matches_with_names(
+                    sv_matches, annot_uuids, annot_name_map, hs.score_method, qk
+                )
+                sv_scored = _canonical_to_scoredmatches(
+                    sv_canonical, sv_matches, database, annot_uuids
+                )
+            else:
+                sv_scored = score_matches(sv_matches, database, hs.score_method)
+
+            sv_inlier_info = {
+                sm.annot_uuid: (sm.sv_inliers, sm.sv_homography)
+                for sm in sver_candidates
+                if sm.sv_inliers > 0
+            }
+            sv_score_map = {sm.annot_uuid: sm for sm in sv_scored}
+            for sm in scored:
+                if sm.annot_uuid in sv_score_map:
+                    replaced = sv_score_map[sm.annot_uuid]
+                    inliers, H = sv_inlier_info.get(sm.annot_uuid, (0, None))
+                    sm.sv_inliers = inliers
+                    sm.sv_homography = H
+                    sm.score = replaced.score
+                    sm.num_matches = replaced.num_matches
+                    sm.correspondences = replaced.correspondences
 
     if ctx is not None:
-        _post_daids = [str(sm.annot_uuid) for sm in scored]
-        _post_dnids = [str(sm.name_uuid) if sm.name_uuid else None for sm in scored]
+        _post_daids = np.array(
+            [_uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64
+        )
+        _post_dnids = np.array(
+            [
+                _name_to_nid.get(sm.name_uuid, -1) if sm.name_uuid else -1
+                for sm in scored
+            ],
+            dtype=np.int64,
+        )
         _post_ascores = np.array([sm.score for sm in scored], dtype=np.float64)
         _post_slist = np.array([sm.score for sm in scored], dtype=np.float64)
+        _post_sort = np.argsort(_post_daids)
+        _post_daids = _post_daids[_post_sort]
+        _post_dnids = _post_dnids[_post_sort]
+        _post_ascores = _post_ascores[_post_sort]
+        _post_slist = _post_slist[_post_sort]
+        _fm_list_post = _fm_arrays_for_scored(
+            [scored[i] for i in _post_sort], matches, database
+        )
         ctx.trace_chipmatches(
             "chipmatches_post_sv",
-            query_annot_index,
-            database[query_annot_index].name_uuid,
+            _trace_qaid,
+            _trace_qnid,
             _post_daids,
             _post_dnids,
-            _post_ascores,
-            _post_ascores,
-            _post_slist,
-            _fm_arrays_for_scored(scored, matches, database),
+            None,
+            None,
+            None,
+            _fm_list_post,
         )
 
     dlog.stage_final(scored)
 
     if ctx is not None:
-        _daids = [str(sm.annot_uuid) for sm in scored]
-        _dnids = [str(sm.name_uuid) if sm.name_uuid else None for sm in scored]
+        _daids = np.array(
+            [_uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64
+        )
+        _dnids = np.array(
+            [
+                _name_to_nid.get(sm.name_uuid, -1) if sm.name_uuid else -1
+                for sm in scored
+            ],
+            dtype=np.int64,
+        )
         _ascores = np.array([sm.score for sm in scored], dtype=np.float64)
         _slist = np.array([sm.score for sm in scored], dtype=np.float64)
+        _final_sort = np.argsort(_daids)
+        _daids = _daids[_final_sort]
+        _dnids = _dnids[_final_sort]
+        _ascores = _ascores[_final_sort]
+        _slist = _slist[_final_sort]
+        _fm_list_final = _fm_arrays_for_scored(
+            [scored[i] for i in _final_sort], matches, database
+        )
         ctx.trace_final_scores(
-            qaid=query_annot_index,
-            qnid=database[query_annot_index].name_uuid,
-            score_method=hs.score_method,
+            qaid=_trace_qaid,
+            qnid=_trace_qnid,
+            score_method=_trace_score_method(hs.score_method),
             daid_list=_daids,
             dnid_list=_dnids,
             annot_score_list=_ascores,
             name_score_list=_ascores,
             score_list=_slist,
-            fm_list=_fm_arrays_for_scored(scored, matches, database),
+            fm_list=_fm_list_final,
         )
 
     return scored[: hs.num_return]
+
+
+def _trace_score_method(score_method: str) -> str:
+    """Map hotspotter implementation labels to WBIA trace labels."""
+    if score_method == "nsum_wbia":
+        return "nsum"
+    if score_method == "csum_wbia":
+        return "csum"
+    return score_method
 
 
 def _fm_arrays_for_scored(

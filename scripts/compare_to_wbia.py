@@ -41,8 +41,8 @@ QUERY_CONFIGS: dict[str, dict] = {
     "sv_on_n20": {"sv_on": True, "num_return": 20},
     "K2": {"sv_on": True, "knn": 2},
     "K6": {"sv_on": True, "knn": 6},
-    "score_csum": {"sv_on": True, "score_method": "csum_wbia"},
-    "pre_csum": {"sv_on": True, "prescore_method": "csum_wbia"},
+    "score_csum": {"sv_on": True, "score_method": "csum"},
+    "pre_csum": {"sv_on": True, "prescore_method": "csum"},
     "Knorm2": {"sv_on": True, "knorm": 2},
     "kpad_fixed_0": {"sv_on": True, "kpad_policy": "fixed", "kpad": 0},
 }

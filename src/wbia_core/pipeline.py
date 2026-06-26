@@ -332,7 +332,7 @@ def identify(
             n_names=hs.sv_n_name_shortlist,
             n_annots_per_name=hs.sv_n_annot_per_name,
         )
-        sver_candidates = spatial_verify(
+        sver_candidates, sv_results = spatial_verify(
             sver_candidates,
             query_features,
             database,
@@ -342,29 +342,69 @@ def identify(
             ori_thresh=hs.sv_ori_thresh,
             use_chip_extent=hs.sv_use_chip_extent,
             weight_inliers=hs.sv_weight_inliers,
+            sver_output_weighting=hs.sv_sver_output_weighting,
         )
-        sv_map = {sm.annot_uuid: sm for sm in sver_candidates if sm.sv_inliers > 0}
-        for sm in scored:
-            if sm.annot_uuid in sv_map:
-                replaced = sv_map[sm.annot_uuid]
-                sm.sv_inliers = replaced.sv_inliers
-                sm.sv_homography = replaced.sv_homography
-                sm.score = replaced.score
 
-    if hs.sv_on and hs.prescore_method != hs.score_method:
-        if hs.score_method in _wbia_methods:
+        if sv_results:
+            match_lookup: dict[tuple[int, int, int], Match] = {}
+            for m in matches:
+                match_lookup[(m.daid, m.qfx, m.dfx)] = m
+
+            sv_matches: list[Match] = []
+            for annot_uuid, (
+                inlier_qfxs,
+                inlier_dfxs,
+                weights,
+            ) in sv_results.items():
+                daid = next(
+                    i for i, a in enumerate(database) if a.annot_uuid == annot_uuid
+                )
+                for qfx, dfx, w in zip(inlier_qfxs, inlier_dfxs, weights, strict=True):
+                    orig = match_lookup.get((daid, qfx, dfx))
+                    if orig is None:
+                        continue
+                    sv_w = float(w) if hs.sv_sver_output_weighting else 1.0
+                    sv_matches.append(
+                        Match(
+                            qfx=qfx,
+                            daid=daid,
+                            dfx=dfx,
+                            dist=orig.dist * sv_w,
+                            name_uuid=orig.name_uuid,
+                            sv_weight=sv_w,
+                        )
+                    )
+
             annot_uuids = [a.annot_uuid for a in database]
             annot_name_map = {
                 a.annot_uuid: a.name_uuid for a in database if a.name_uuid is not None
             }
-            _, canonical = score_matches_with_names(
-                matches, annot_uuids, annot_name_map, hs.score_method
-            )
-            scored = _canonical_to_scoredmatches(
-                canonical, matches, database, annot_uuids
-            )
-        else:
-            scored = score_matches(matches, database, hs.score_method)
+            if hs.score_method in _wbia_methods:
+                qk = query_features.keypoints if hs.rotation_invariance else None
+                _, sv_canonical = score_matches_with_names(
+                    sv_matches, annot_uuids, annot_name_map, hs.score_method, qk
+                )
+                sv_scored = _canonical_to_scoredmatches(
+                    sv_canonical, sv_matches, database, annot_uuids
+                )
+            else:
+                sv_scored = score_matches(sv_matches, database, hs.score_method)
+
+            sv_inlier_info = {
+                sm.annot_uuid: (sm.sv_inliers, sm.sv_homography)
+                for sm in sver_candidates
+                if sm.sv_inliers > 0
+            }
+            sv_score_map = {sm.annot_uuid: sm for sm in sv_scored}
+            for sm in scored:
+                if sm.annot_uuid in sv_score_map:
+                    replaced = sv_score_map[sm.annot_uuid]
+                    inliers, H = sv_inlier_info.get(sm.annot_uuid, (0, None))
+                    sm.sv_inliers = inliers
+                    sm.sv_homography = H
+                    sm.score = replaced.score
+                    sm.num_matches = replaced.num_matches
+                    sm.correspondences = replaced.correspondences
 
     dlog.stage_final(scored)
 
