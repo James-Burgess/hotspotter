@@ -12,7 +12,10 @@ build:
 # ---- Unit tests (42 tests, <2s, self-contained) ----
 test: test-unit
 test-unit:
-	docker run --rm --entrypoint bash $(IMAGE) -c \
+	docker run --rm \
+		-v $(CURDIR)/../artifacts/wbia-oracle:/artifacts/wbia-oracle \
+		-e WBIA_ORACLE_DIR=/artifacts/wbia-oracle \
+		--entrypoint bash $(IMAGE) -c \
 		"pip install pytest -q && python -m pytest tests/ -q --ignore=tests/benchmark --ignore=tests/replay"
 
 # ---- Benchmark pytest tests (inside container, needs dataset mount) ----
@@ -44,6 +47,17 @@ test-replay-live:
 		-e WBIA_URL=http://localhost:5000 \
 		--entrypoint bash $(IMAGE) -c \
 		"pip install pytest -q && python -m pytest tests/replay/ -v -k 'TestLiveWbiaComparison'"
+
+# ---- Parity result tests (compare final rankings against WBIA oracle) ----
+test-parity-results:
+	docker run --rm \
+		-v $(CURDIR)/../artifacts/wbia-oracle:/artifacts/wbia-oracle \
+		-v $(CURDIR)/../pipeline/tests/reference_batch.json:/app/pipeline/tests/reference_batch.json \
+		-v $(CURDIR)/../pipeline/tests/assets/images:/app/pipeline/tests/assets/images \
+		-e WBIA_ORACLE_DIR=/artifacts/wbia-oracle \
+		-e WBIA_BATCH_PATH=/app/pipeline/tests/reference_batch.json \
+		--entrypoint bash $(IMAGE) -c \
+		"pip install pytest -q && python -m pytest tests/test_parity_results.py -v -m parity"
 
 # ---- All pytest tests ----
 test-all:

@@ -37,6 +37,8 @@ WORKDIR /app
 # workflow to match the compiled C++ output exactly.
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.6
 RUN pip3 install --no-cache-dir --no-deps ./wbia-utool/
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.5.dev10
+RUN pip3 install --no-cache-dir --no-deps ./wbia-tpl-pyflann/
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.3
 RUN pip3 install --no-cache-dir --no-deps ./wbia-vtool/
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.0
@@ -50,7 +52,6 @@ RUN pip3 install --no-cache-dir \
         'opencv-contrib-python-headless==4.7.0.72' \
         'pydantic>=2.0' \
         'scipy>=1.10,<2' \
-        'wbia-pyflann>=4.0.4' \
         annoy \
         delorean \
         gitpython \

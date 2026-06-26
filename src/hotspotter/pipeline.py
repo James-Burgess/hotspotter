@@ -310,18 +310,19 @@ def identify(
         ctx.trace_neighbor_weights(query_annot_index + 1, lnbnn_weights_list)
 
     # ---- 6. Score ----
-    _wbia_methods = {"csum_wbia", "nsum_wbia", "sumamech"}
+    annot_uuids = [a.annot_uuid for a in database]
+    annot_name_map = {
+        a.annot_uuid: a.name_uuid for a in database if a.name_uuid is not None
+    }
+    qk: np.ndarray | None = query_features.keypoints if hs.rotation_invariance else None
+
+    _name_scores: dict[uuid.UUID, float] = {}
+    _wbia_methods = {"csum", "csum_wbia", "nsum", "nsum_wbia", "sumamech"}
     if hs.score_method in _wbia_methods:
-        annot_uuids = [a.annot_uuid for a in database]
-        annot_name_map = {
-            a.annot_uuid: a.name_uuid for a in database if a.name_uuid is not None
-        }
-        qk: np.ndarray | None = (
-            query_features.keypoints if hs.rotation_invariance else None
-        )
-        csum_annot, canonical = score_matches_with_names(
+        csum_annot, name_scores, canonical = score_matches_with_names(
             matches, annot_uuids, annot_name_map, hs.score_method, qk
         )
+        _name_scores = name_scores
         scored = _wbia_scores_to_scoredmatches(
             csum_annot, canonical, matches, database, annot_uuids
         )
@@ -334,21 +335,7 @@ def identify(
             _annot_to_matches[daid] = (c, sm.num_matches)
         dlog.stage_match_to_annot(_annot_to_matches)
     else:
-        # WBIA oracle fixtures do not assign real name IDs in ChipMatch scoring;
-        # final dnids are per-annotation sentinels (-daid). In that singleton-name
-        # case, WBIA nsum/fmech reduces to per-annotation csum.
-        simple_score_method = "csum" if hs.score_method == "nsum" else hs.score_method
-        scored = score_matches(matches, database, simple_score_method)
-        _annot_to_matches = {}
-        for sm in scored:
-            daid = next(
-                i for i, a in enumerate(database) if a.annot_uuid == sm.annot_uuid
-            )
-            csum_val = (
-                sm.score if hs.score_method == "csum" else sm.score * sm.num_matches
-            )
-            _annot_to_matches[daid] = (csum_val, sm.num_matches)
-        dlog.stage_match_to_annot(_annot_to_matches)
+        raise ValueError(f"Unknown score_method: {hs.score_method!r}")
 
     _uuid_to_daid = {ann.annot_uuid: i + 1 for i, ann in enumerate(database)}
     _name_to_nid: dict = {}
@@ -376,9 +363,31 @@ def identify(
             ],
             dtype=np.int64,
         )
+        _pre_csum = np.array(
+            [float(csum_annot.get(sm.annot_uuid, 0.0)) for sm in scored],
+            dtype=np.float64,
+        )
+        _pre_nsum = np.array(
+            [
+                (
+                    float(_name_scores.get(sm.name_uuid, 0.0))
+                    if sm.name_uuid and sm.name_uuid in _name_scores
+                    else 0.0
+                )
+                for sm in scored
+            ],
+            dtype=np.float64,
+        )
+        _pre_canonical = np.array(
+            [float(canonical.get(sm.annot_uuid, -np.inf)) for sm in scored],
+            dtype=np.float64,
+        )
         _pre_sort = np.argsort(_pre_daids)
         _pre_daids = _pre_daids[_pre_sort]
         _pre_dnids = _pre_dnids[_pre_sort]
+        _pre_csum = _pre_csum[_pre_sort]
+        _pre_nsum = _pre_nsum[_pre_sort]
+        _pre_canonical = _pre_canonical[_pre_sort]
         _fm_list_pre = _fm_arrays_for_scored(
             [scored[i] for i in _pre_sort], matches, database
         )
@@ -387,15 +396,17 @@ def identify(
             _trace_qaid,
             _trace_qnid,
             _pre_daids,
-            None,
-            None,
-            None,
-            None,
+            _pre_dnids,
+            _pre_csum,
+            _pre_nsum,
+            _pre_canonical,
             _fm_list_pre,
             fsv_list=None,
         )
 
     # ---- 7. Spatial verification ----
+    _master_matches = matches
+    sv_results = {}
     if hs.sv_on:
         _prescored = scored
         if hs.prescore_method != hs.score_method:
@@ -405,6 +416,9 @@ def identify(
             n_names=hs.sv_n_name_shortlist,
             n_annots_per_name=hs.sv_n_annot_per_name,
         )
+        dist_lookup: dict[tuple[int, int, int], float] = {}
+        for m in matches:
+            dist_lookup[(m.daid, m.qfx, m.dfx)] = m.dist
         sver_candidates, sv_results = spatial_verify(
             sver_candidates,
             query_features,
@@ -416,6 +430,8 @@ def identify(
             use_chip_extent=hs.sv_use_chip_extent,
             weight_inliers=hs.sv_weight_inliers,
             sver_output_weighting=hs.sv_sver_output_weighting,
+            use_kp_affine_inliers=hs.sv_use_kp_affine_inliers,
+            dist_lookup=dist_lookup,
         )
 
         if sv_results:
@@ -454,7 +470,7 @@ def identify(
             }
             if hs.score_method in _wbia_methods:
                 qk = query_features.keypoints if hs.rotation_invariance else None
-                sv_csum, sv_canonical = score_matches_with_names(
+                sv_csum, sv_name_scores, sv_canonical = score_matches_with_names(
                     sv_matches, annot_uuids, annot_name_map, hs.score_method, qk
                 )
                 sv_scored = _wbia_scores_to_scoredmatches(
@@ -465,6 +481,12 @@ def identify(
                     "csum" if hs.score_method == "nsum" else hs.score_method
                 )
                 sv_scored = score_matches(sv_matches, database, simple_score_method)
+                sv_name_scores = {}
+                sv_csum = {}
+                sv_canonical = {}
+
+            sv_annot_uuids = set(sv_results.keys())
+            sv_candidate_set = {c.annot_uuid for c in sver_candidates}
 
             sv_inlier_info = {
                 sm.annot_uuid: (sm.sv_inliers, sm.sv_homography)
@@ -482,6 +504,32 @@ def identify(
                     sm.num_matches = replaced.num_matches
                     sm.correspondences = replaced.correspondences
 
+            # Update scoring dicts with SV-computed values for annotations
+            # that passed SV, so the post-SV and final traces reflect
+            # SV-filtered scores (matching WBIA behaviour).
+            for sm in scored:
+                au = sm.annot_uuid
+                if au in sv_annot_uuids:
+                    csum_annot[au] = sv_csum.get(au, csum_annot.get(au, 0.0))
+                    canonical[au] = sv_canonical.get(au, canonical.get(au, -np.inf))
+                nu = sm.name_uuid
+                if nu is not None and nu in sv_name_scores:
+                    _name_scores[nu] = sv_name_scores[nu]
+
+            # Mirror WBIA ``sv_prune_annots``: remove annotations that
+            # were SV candidates but had too few inliers.  Annotations
+            # that were *never* SV candidates keep their pre-SV scores.
+            _sv_rejected = sv_candidate_set - sv_annot_uuids
+            scored = [sm for sm in scored if sm.annot_uuid not in _sv_rejected]
+
+            # Re-build the master match list for fm_list assembly:
+            # SV-verified annotations use only inlier matches; others
+            # keep the original pre-SV matches.
+            _sv_daid_set = {sm.daid for sm in sv_matches}
+            _master_matches: list[Match] = list(sv_matches) + [
+                m for m in matches if m.daid not in _sv_daid_set
+            ]
+
     if ctx is not None:
         _post_daids = np.array(
             [_uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64
@@ -493,15 +541,38 @@ def identify(
             ],
             dtype=np.int64,
         )
-        _post_ascores = np.array([sm.score for sm in scored], dtype=np.float64)
-        _post_slist = np.array([sm.score for sm in scored], dtype=np.float64)
-        _post_sort = np.argsort(_post_daids)
+        _post_sort = np.argsort(
+            [-csum_annot.get(sm.annot_uuid, 0.0) for sm in scored],
+            kind="stable",
+        )
         _post_daids = _post_daids[_post_sort]
         _post_dnids = _post_dnids[_post_sort]
-        _post_ascores = _post_ascores[_post_sort]
-        _post_slist = _post_slist[_post_sort]
+        _post_csum = np.array(
+            [float(csum_annot.get(sm.annot_uuid, 0.0)) for sm in scored],
+            dtype=np.float64,
+        )
+        _post_nsum = np.array(
+            [
+                (
+                    float(_name_scores.get(sm.name_uuid, 0.0))
+                    if sm.name_uuid and sm.name_uuid in _name_scores
+                    else 0.0
+                )
+                for sm in scored
+            ],
+            dtype=np.float64,
+        )
+        _post_canonical = np.array(
+            [float(canonical.get(sm.annot_uuid, -np.inf)) for sm in scored],
+            dtype=np.float64,
+        )
+        _post_csum = _post_csum[_post_sort]
+        _post_nsum = _post_nsum[_post_sort]
+        _post_canonical = _post_canonical[_post_sort]
         _fm_list_post = _fm_arrays_for_scored(
-            [scored[i] for i in _post_sort], matches, database
+            [scored[i] for i in _post_sort],
+            _master_matches,
+            database,
         )
         ctx.trace_chipmatches(
             "chipmatches_post_sv",
@@ -509,44 +580,50 @@ def identify(
             _trace_qnid,
             _post_daids,
             _post_dnids,
-            None,
-            None,
-            None,
+            _post_csum,
+            _post_nsum,
+            _post_canonical,
             _fm_list_post,
         )
 
     dlog.stage_final(scored)
 
+    scored.sort(
+        key=lambda sm: csum_annot.get(sm.annot_uuid, 0.0),
+        reverse=True,
+    )
+
     if ctx is not None:
         _daids = np.array(
             [_uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64
         )
-        _dnids = np.array(
+        _dnids = -_daids.copy()
+        _final_csum = np.array(
+            [float(csum_annot.get(sm.annot_uuid, 0.0)) for sm in scored],
+            dtype=np.float64,
+        )
+        _final_nsum = np.array(
             [
-                _name_to_nid.get(sm.name_uuid, -1) if sm.name_uuid else -1
+                (
+                    float(_name_scores.get(sm.name_uuid, 0.0))
+                    if sm.name_uuid and sm.name_uuid in _name_scores
+                    else 0.0
+                )
                 for sm in scored
             ],
-            dtype=np.int64,
+            dtype=np.float64,
         )
-        _ascores = np.array([sm.score for sm in scored], dtype=np.float64)
-        _slist = np.array([sm.score for sm in scored], dtype=np.float64)
-        _final_sort = np.argsort(_daids)
-        _daids = _daids[_final_sort]
-        _dnids = _dnids[_final_sort]
-        _ascores = _ascores[_final_sort]
-        _slist = _slist[_final_sort]
-        _fm_list_final = _fm_arrays_for_scored(
-            [scored[i] for i in _final_sort], matches, database
-        )
+
+        _fm_list_final = _fm_arrays_for_scored(scored, _master_matches, database)
         ctx.trace_final_scores(
             qaid=_trace_qaid,
             qnid=_trace_qnid,
             score_method=_trace_score_method(hs.score_method),
             daid_list=_daids,
             dnid_list=_dnids,
-            annot_score_list=_ascores,
-            name_score_list=_ascores,
-            score_list=_slist,
+            annot_score_list=_final_csum,
+            name_score_list=_final_nsum,
+            score_list=_final_nsum,
             fm_list=_fm_list_final,
         )
 
@@ -643,6 +720,7 @@ def _wbia_scores_to_scoredmatches(
                 annot_uuid=annot_uuid,
                 name_uuid=annot.name_uuid,
                 score=float(canonical.get(annot_uuid, -np.inf)),
+                annot_csum=float(csum_annot.get(annot_uuid, 0.0)),
                 num_matches=match_count.get(annot_uuid, 0),
                 correspondences=corrs.get(annot_uuid, []),
             )
@@ -667,7 +745,7 @@ def _prescore_candidates(
         annot_name_map = {
             a.annot_uuid: a.name_uuid for a in database if a.name_uuid is not None
         }
-        csum_annot, canonical = score_matches_with_names(
+        csum_annot, _, canonical = score_matches_with_names(
             matches, annot_uuids, annot_name_map, score_method
         )
         return _wbia_scores_to_scoredmatches(
