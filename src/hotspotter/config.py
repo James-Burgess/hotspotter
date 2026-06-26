@@ -87,7 +87,16 @@ class HotSpotterConfig(BaseModel):
         description="Max orientation delta in radians (WBIA default: TAU/4).",
     )
     sv_use_chip_extent: bool = Field(default=True)
-    sv_weight_inliers: bool = Field(default=True)
+    sv_weight_inliers: bool = Field(
+        default=True,
+        description="Bias RANSAC sampling toward high-FG features (WBIA weight_inliers). "
+        "Does NOT multiply scores.",
+    )
+    sv_sver_output_weighting: bool = Field(
+        default=False,
+        description="Append per-inlier homography-error weight as a new fsv column "
+        "and re-score (WBIA sver_output_weighting, default False).",
+    )
     num_return: int = Field(default=10, ge=1)
     ratio_thresh: Optional[float] = Field(default=None, gt=0.0)
     lnbnn_ratio: float = Field(default=1.0, gt=0.0)

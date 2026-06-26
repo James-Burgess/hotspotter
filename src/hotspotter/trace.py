@@ -1,23 +1,20 @@
-"""Parquet trace writer for hotspotter pipeline stages.
+"""Parquet trace writer matching WBIA oracle format exactly.
 
-When ``HOTSPOTTER_TRACE_DIR`` is set, each pipeline stage writes a parquet
-row plus ``.npy`` sidecars for large arrays.  The schema matches WBIA oracle
-dumps so that ``compare_wbia_oracles.py`` can compare hotspotter traces
-directly against WBIA oracle outputs.
+Mirrors the conventions of ``patches/wbia_parquet_trace.py`` so that
+``compare_wbia_oracles.py`` can diff hotspotter traces against WBIA oracles
+with identical file structure, column schemas, and array naming.
 
-Naming convention::
+File naming::
 
-    {config_label}_{query_index}.parquet
+    {config_label}_{query_index:06d}.parquet
 
-Where ``config_label`` is the canonical config name (e.g. ``sv_on_true``)
-and ``query_index`` is the query position within that config.
+Array sidecar naming::
 
-Usage::
+    {counter:06d}_{row_index}_{field}.npy
 
-    HOTSPOTTER_TRACE_DIR=artifacts/hotspotter-trace/run-001 \
-    HOTSPOTTER_TRACE_RUN_ID=hs-dev-1 \
-    HOTSPOTTER_TRACE_CONFIG_LABEL=sv_on_true \
-        python scripts/run_fixture.py ...
+Metadata columns (always first 5, matching WBIA)::
+
+    trace_run_id, stage, stage_counter, row_index, timestamp_unix
 """
 
 from __future__ import annotations
@@ -25,13 +22,22 @@ from __future__ import annotations
 import json
 import os
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-_ARRAY_THRESHOLD = 64
+_ARRAY_INLINE_LIMIT = 64
+
+# Module-level per-stage counters, matching WBIA's _COUNTERS dict.
+# Persists across TraceContext instances so that successive queries
+# in the same run get distinct array filenames.
+_GLOBAL_COUNTERS: dict[str, int] = {}
+
+
+# --------------------------------------------------------------------------- #
+# Environment helpers
+# --------------------------------------------------------------------------- #
 
 
 def _is_trace_enabled() -> bool:
@@ -43,37 +49,24 @@ def _trace_dir() -> Path:
 
 
 def _trace_run_id() -> str:
-    return os.environ.get("HOTSPOTTER_TRACE_RUN_ID", str(uuid.uuid4()))
+    return os.environ.get("HOTSPOTTER_TRACE_RUN_ID", "hotspotter")
 
 
 def _trace_config_label() -> str:
     return os.environ.get("HOTSPOTTER_TRACE_CONFIG_LABEL", "default")
 
 
-def _write_manifest(
-    base_dir: Path, config_label: str, query_index: int, config: dict | None = None
-) -> None:
-    """Write or append a trace manifest entry for the current run."""
-    manifest_path = base_dir / "trace_manifest.json"
-    entries: list[dict] = []
-    if manifest_path.exists():
-        entries = json.loads(manifest_path.read_text())
-        if not isinstance(entries, list):
-            entries = []
-    entries.append(
-        {
-            "config_label": config_label,
-            "query_index": query_index,
-            "config": config or {},
-            "trace_run_id": _trace_run_id(),
-            "timestamp_unix": time.time(),
-        }
-    )
-    manifest_path.write_text(json.dumps(entries, indent=2, sort_keys=True))
+# --------------------------------------------------------------------------- #
+# TraceContext — one instance per identify() call
+# --------------------------------------------------------------------------- #
 
 
 class TraceContext:
-    """Per-query trace context — one instance per ``identify()`` call."""
+    """Per-query trace context mirroring WBIA's ``wbia_parquet_trace.py``.
+
+    All file naming, column ordering, and array conventions are identical
+    to the WBIA trace hooks so that oracle comparison is structural.
+    """
 
     def __init__(
         self, run_id: str, base_dir: Path, config_label: str, query_index: int
@@ -82,210 +75,207 @@ class TraceContext:
         self._base = base_dir
         self._config_label = config_label
         self._query_index = query_index
-        self._stage_counter = 0
 
-    def _prefix(self) -> str:
-        return f"{self._config_label}_{self._query_index:06d}"
+    # ------------------------------------------------------------------ #
+    # Core infrastructure (direct mirrors of WBIA helpers)
+    # ------------------------------------------------------------------ #
 
-    def _stage_rows(self, stage_name: str, rows: list[dict]) -> None:
-        import pandas as pd
+    def _stage_dir(self, stage: str) -> Path:
+        path = self._base / stage
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
-        timestamp = time.time()
-        stage_dir = self._base / stage_name
-        stage_dir.mkdir(parents=True, exist_ok=True)
+    def _next_counter(self, stage: str) -> int:
+        _GLOBAL_COUNTERS[stage] = _GLOBAL_COUNTERS.get(stage, 0) + 1
+        return _GLOBAL_COUNTERS[stage]
 
-        for row in rows:
-            row.setdefault("trace_run_id", self._run_id)
-            row.setdefault("stage", stage_name)
-            row.setdefault("stage_counter", self._stage_counter)
-            row.setdefault("row_index", 0)
-            row.setdefault("timestamp_unix", timestamp)
-            row.setdefault("config_label", self._config_label)
-            row.setdefault("query_index", self._query_index)
-
-        df = pd.DataFrame(rows)
-
-        fname = f"{self._prefix()}.parquet"
-        df.to_parquet(stage_dir / fname, index=False)
-        self._stage_counter += 1
-
-    def _array_sidecar_meta(
-        self, stage_name: str, arr: np.ndarray, label: str, include_values: bool = False
-    ) -> dict:
-        arrays_dir = self._base / stage_name / "arrays"
-        arrays_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"{self._prefix()}_{label}.npy"
-        path = arrays_dir / fname
-        np.save(str(path), arr)
-        meta = {
-            "dtype": str(arr.dtype),
+    @staticmethod
+    def _array_summary(arr: np.ndarray) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "shape": list(arr.shape),
+            "dtype": str(arr.dtype),
             "size": int(arr.size),
-            "npy_path": str(
-                Path("/artifacts/wbia-oracle")
-                / self._base.name
-                / stage_name
-                / "arrays"
-                / fname
-            ),
         }
         if arr.size:
-            meta.update(
-                {
-                    "min": _safe_scalar(np.min(arr)),
-                    "max": _safe_scalar(np.max(arr)),
-                    "mean": _safe_scalar(np.mean(arr.astype(np.float64))),
-                }
-            )
-        if include_values:
-            meta["values"] = arr.tolist()
-        return meta
+            try:
+                finite = (
+                    arr[np.isfinite(arr)]
+                    if np.issubdtype(arr.dtype, np.number)
+                    else arr
+                )
+                if np.size(finite):
+                    out["min"] = float(np.min(finite))
+                    out["max"] = float(np.max(finite))
+                    out["mean"] = float(np.mean(finite))
+            except Exception:
+                pass
+        return out
 
-    def _write_array_sidecar(self, stage_name: str, arr: np.ndarray, label: str) -> str:
-        return json.dumps(self._array_sidecar_meta(stage_name, arr, label))
+    def _save_array(
+        self, stage: str, counter: int, label: str, arr: np.ndarray
+    ) -> dict[str, Any]:
+        arrays_dir = self._stage_dir(stage) / "arrays"
+        arrays_dir.mkdir(parents=True, exist_ok=True)
+        safe_label = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in label)
+        path = arrays_dir / f"{counter:06d}_{safe_label}.npy"
+        np.save(str(path), arr)
+        out = self._array_summary(arr)
+        out["npy_path"] = str(path)
+        if arr.size <= _ARRAY_INLINE_LIMIT:
+            out["values"] = arr.tolist()
+        return out
 
-    def _write_array_sequence(
-        self, stage_name: str, arrays: Any, base_label: str
-    ) -> list[dict]:
+    def _json_default(self, value: Any) -> Any:
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return self._array_summary(value)
+        if isinstance(value, Path):
+            return str(value)
+        if hasattr(value, "__UUID__"):
+            return str(value)
+        return repr(value)
+
+    def _json_dumps(self, value: Any) -> str:
+        return json.dumps(value, default=self._json_default, sort_keys=True)
+
+    def _scalar(self, value: Any) -> Any:
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return self._json_dumps(value)
+
+    def _to_rows(self, stage: str, counter: int, payload: Any) -> list[dict[str, Any]]:
+        """Normalise *payload* into parquet rows with WBIA metadata at front."""
+        if isinstance(payload, list) and all(isinstance(row, dict) for row in payload):
+            rows = payload
+        elif isinstance(payload, dict):
+            rows = [payload]
+        else:
+            rows = [{"value_json": self._json_dumps(payload)}]
+
+        timestamp = time.time()
+        normalized: list[dict[str, Any]] = []
+        for row_index, row in enumerate(rows):
+            out: dict[str, Any] = {
+                "trace_run_id": self._run_id,
+                "stage": stage,
+                "stage_counter": counter,
+                "row_index": row_index,
+                "timestamp_unix": timestamp,
+            }
+            for key, value in row.items():
+                if isinstance(value, np.ndarray):
+                    out[f"{key}_array"] = self._json_dumps(
+                        self._save_array(stage, counter, f"{row_index}_{key}", value)
+                    )
+                elif isinstance(value, (list, tuple, dict)):
+                    out[key] = self._json_dumps(value)
+                else:
+                    out[key] = self._scalar(value)
+            normalized.append(out)
+        return normalized
+
+    def dump_stage(self, stage: str, payload: Any) -> None:
+        """Write a parquet file for *stage* using WBIA naming conventions."""
+        counter = self._next_counter(stage)
+        rows = self._to_rows(stage, counter, payload)
+        prefix = f"{self._config_label}_{self._query_index:06d}"
+        path = self._stage_dir(stage) / f"{prefix}.parquet"
+        import pandas as pd
+
+        pd.DataFrame(rows).to_parquet(path, index=False)
+
+    def _save_arrays_sequence(
+        self,
+        stage: str,
+        counter: int,
+        base_label: str,
+        arrays: list[np.ndarray] | None,
+    ) -> list[dict[str, Any]]:
+        """Save a sequence of arrays and return their metadata dicts."""
         if not arrays:
             return []
-        sidecars = []
+        results: list[dict[str, Any]] = []
         for idx, arr in enumerate(arrays):
             if not isinstance(arr, np.ndarray):
                 continue
-            sidecars.append(
-                self._array_sidecar_meta(
-                    stage_name, arr, f"{base_label}_{idx}", include_values=True
-                )
-            )
-        return sidecars
+            results.append(self._save_array(stage, counter, f"{base_label}_{idx}", arr))
+        return results
 
-    def _maybe_array(self, stage_name: str, arr: np.ndarray, label: str) -> str:
-        if arr.size <= _ARRAY_THRESHOLD:
-            return json.dumps({"values": arr.tolist()})
-        return self._write_array_sidecar(stage_name, arr, label)
+    # ------------------------------------------------------------------ #
+    # Stage-specific trace methods
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _trace_order(database: list, query_annot_index: int) -> list[int]:
+        """Query aid first, then rest — matches WBIA qaids+daids ordering."""
+        return [query_annot_index] + [
+            i for i in range(len(database)) if i != query_annot_index
+        ]
 
     def trace_annotations(
         self,
         database: list,
+        query_annot_index: int,
     ) -> None:
-        rows = []
-        for i, ann in enumerate(database):
+        rows: list[dict[str, Any]] = []
+        for i in self._trace_order(database, query_annot_index):
+            ann = database[i]
+            bbox = ann.bbox
+            if bbox is not None and hasattr(bbox, "tolist"):
+                bbox = bbox.tolist()
+            elif bbox is not None:
+                bbox = list(bbox)
             rows.append(
                 {
-                    "aid": i,
+                    "aid": i + 1,
                     "annot_uuid": str(ann.annot_uuid),
-                    "bbox": str(tuple(ann.bbox)),
+                    "bbox": bbox,
                     "theta": 0.0,
                     "species": "unknown",
-                    "is_query": (i == 0),
+                    "is_query": (i == query_annot_index),
                 }
             )
-        self._stage_rows("annotations", rows)
-
-    def trace_chip(
-        self,
-        aid: int,
-        chip: np.ndarray,
-        bbox: tuple,
-    ) -> None:
-        h, w = chip.shape[:2]
-        meta = self._array_sidecar_meta("chips", chip, f"chip_{aid:03d}")
-        self._stage_rows(
-            "chips",
-            [
-                {
-                    "aid": aid,
-                    "chip_fpath": meta.get("npy_path", ""),
-                    "chip_size": str([h, w]),
-                }
-            ],
-        )
-
-    def trace_features(
-        self,
-        aid: int,
-        keypoints: np.ndarray,
-        descriptors: np.ndarray,
-    ) -> None:
-        self._stage_rows(
-            "features_keypoints",
-            [
-                {
-                    "aid": aid,
-                    "num_keypoints": int(keypoints.shape[0]),
-                    "keypoints_array": self._maybe_array(
-                        "features_keypoints", keypoints, f"keypoints_{aid:03d}"
-                    ),
-                }
-            ],
-        )
-        self._stage_rows(
-            "features_descriptors",
-            [
-                {
-                    "aid": aid,
-                    "num_descriptors": int(descriptors.shape[0]),
-                    "descriptors_array": self._maybe_array(
-                        "features_descriptors", descriptors, f"descriptors_{aid:03d}"
-                    ),
-                }
-            ],
-        )
+        self.dump_stage("annotations", rows)
 
     def trace_chips_and_features(
         self,
         database: list,
+        query_annot_index: int,
     ) -> None:
-        chip_rows = []
-        kp_rows = []
-        desc_rows = []
+        order = self._trace_order(database, query_annot_index)
+        chip_rows: list[dict[str, Any]] = []
+        kp_rows: list[dict[str, Any]] = []
+        desc_rows: list[dict[str, Any]] = []
 
-        for i, ann in enumerate(database):
+        for i in order:
+            ann = database[i]
+            aid = i + 1
             if ann.image is not None:
                 h, w = ann.image.shape[:2]
-                meta = self._array_sidecar_meta("chips", ann.image, f"chip_{i:03d}")
-                chip_rows.append(
-                    {
-                        "aid": i,
-                        "chip_fpath": meta.get("npy_path", ""),
-                        "chip_size": str([h, w]),
-                    }
-                )
+                chip_rows.append({"aid": aid, "chip_fpath": "", "chip_size": [w, h]})
             else:
-                chip_rows.append(
-                    {
-                        "aid": i,
-                        "chip_fpath": "",
-                        "chip_size": str([0, 0]),
-                    }
-                )
+                chip_rows.append({"aid": aid, "chip_fpath": "", "chip_size": [0, 0]})
             kp_rows.append(
                 {
-                    "aid": i,
+                    "aid": aid,
                     "num_keypoints": int(ann.features.keypoints.shape[0]),
-                    "keypoints_array": self._maybe_array(
-                        "features_keypoints",
-                        ann.features.keypoints,
-                        f"keypoints_{i:03d}",
-                    ),
+                    "keypoints": np.asarray(ann.features.keypoints),
                 }
             )
             desc_rows.append(
                 {
-                    "aid": i,
+                    "aid": aid,
                     "num_descriptors": int(ann.features.descriptors.shape[0]),
-                    "descriptors_array": self._maybe_array(
-                        "features_descriptors",
-                        ann.features.descriptors,
-                        f"descriptors_{i:03d}",
-                    ),
+                    "descriptors": np.asarray(ann.features.descriptors),
                 }
             )
 
-        self._stage_rows("chips", chip_rows)
-        self._stage_rows("features_keypoints", kp_rows)
-        self._stage_rows("features_descriptors", desc_rows)
+        self.dump_stage("chips", chip_rows)
+        self.dump_stage("features_keypoints", kp_rows)
+        self.dump_stage("features_descriptors", desc_rows)
 
     def trace_neighbors(
         self,
@@ -293,54 +283,97 @@ class TraceContext:
         neighbor_idxs: np.ndarray,
         neighbor_dists: np.ndarray,
     ) -> None:
-        self._stage_rows(
+        self.dump_stage(
             "nearest_neighbors",
             [
                 {
                     "qaid": qaid,
-                    "neighbor_idxs_array": self._maybe_array(
-                        "nearest_neighbors", neighbor_idxs, "neighbor_idxs"
-                    ),
-                    "neighbor_dists_array": self._maybe_array(
-                        "nearest_neighbors", neighbor_dists, "neighbor_dists"
-                    ),
+                    "neighbor_idxs": np.asarray(neighbor_idxs),
+                    "neighbor_dists": np.asarray(neighbor_dists),
                 }
             ],
         )
 
     def trace_baseline_filter(
         self,
-        invalid_mask: np.ndarray,
+        qaid: int,
+        valid: np.ndarray,
     ) -> None:
-        self._stage_rows(
+        self.dump_stage(
             "baseline_neighbor_filter",
-            [
-                {
-                    "invalid_mask_array": self._maybe_array(
-                        "baseline_neighbor_filter", invalid_mask, "invalid_mask"
-                    ),
-                }
-            ],
+            [{"qaid": qaid, "valid": np.asarray(valid)}],
         )
 
     def trace_neighbor_weights(
         self,
+        qaid: int,
         weights: np.ndarray | list[float],
     ) -> None:
         if isinstance(weights, list):
             weights = np.array(weights, dtype=np.float64)
-        self._stage_rows(
+        self.dump_stage(
             "neighbor_weights",
             [
                 {
-                    "weights_array": self._maybe_array(
-                        "neighbor_weights", weights, "weights"
-                    ),
-                    "num_weights": int(weights.size),
-                    "nonzero_count": int((weights > 0).sum()),
+                    "qaid": qaid,
+                    "filtkeys": ["baseline"],
+                    "weight_lnbnn": np.asarray(weights),
                 }
             ],
         )
+
+    # ------------------------------------------------------------------ #
+    # Chipmatch / final-score traces
+    # ------------------------------------------------------------------ #
+
+    def _chipmatch_payload(
+        self,
+        fm_stage: str,
+        qaid: int,
+        qnid: Any,
+        daid_list: Any,
+        dnid_list: Any,
+        annot_scores: Any,
+        name_scores: Any,
+        score_list: Any,
+        fm_list: Any,
+        fsv_list: Any,
+    ) -> dict[str, Any]:
+        fm_counter = self._next_counter("__internal__")
+        fm_sidecars = (
+            self._save_arrays_sequence(fm_stage, fm_counter, "fm", fm_list)
+            if fm_list
+            else []
+        )
+        fsv_sidecars = (
+            self._save_arrays_sequence(fm_stage, fm_counter, "fsv", fsv_list)
+            if fsv_list
+            else []
+        )
+        return {
+            "qaid": qaid,
+            "qnid": int(qnid) if qnid is not None else None,
+            "daid_list": np.asarray(
+                daid_list if daid_list is not None else [], dtype=np.int64
+            ),
+            "dnid_list": np.asarray(
+                dnid_list if dnid_list is not None else [], dtype=np.int64
+            ),
+            "annot_score_list": (
+                np.asarray(annot_scores)
+                if annot_scores is not None
+                else np.asarray(None)
+            ),
+            "name_score_list": (
+                np.asarray(name_scores) if name_scores is not None else np.asarray(None)
+            ),
+            "score_list": (
+                np.asarray(score_list) if score_list is not None else np.asarray(None)
+            ),
+            "fm_list_json": self._json_dumps(fm_sidecars),
+            "fsv_list_json": self._json_dumps(fsv_sidecars),
+            "stage_name": fm_stage,
+        }
 
     def trace_chipmatches(
         self,
@@ -355,48 +388,20 @@ class TraceContext:
         fm_list: Any = None,
         fsv_list: Any = None,
     ) -> None:
-        fm_list_json = json.dumps(self._write_array_sequence(stage_name, fm_list, "fm"))
-        fsv_json = json.dumps(fsv_list or [])
-        qnid_val = str(qnid) if qnid is not None else None
-        _daids = np.asarray(daid_list if daid_list is not None else [])
-        _dnids = np.asarray(dnid_list if dnid_list is not None else [])
-        _ascores = np.asarray(
-            annot_scores if annot_scores is not None else [], dtype=np.float64
+        fm_stage = stage_name.replace("chipmatches_", "")
+        payload = self._chipmatch_payload(
+            fm_stage,
+            qaid,
+            qnid,
+            daid_list,
+            dnid_list,
+            annot_scores,
+            name_scores,
+            score_list,
+            fm_list,
+            fsv_list,
         )
-        _nscores = np.asarray(
-            name_scores if name_scores is not None else [], dtype=np.float64
-        )
-        _slist = np.asarray(
-            score_list if score_list is not None else [], dtype=np.float64
-        )
-
-        self._stage_rows(
-            stage_name,
-            [
-                {
-                    "qaid": qaid,
-                    "qnid": qnid_val,
-                    "daid_list_array": self._maybe_array(
-                        stage_name, _daids, "daid_list"
-                    ),
-                    "dnid_list_array": self._maybe_array(
-                        stage_name, _dnids, "dnid_list"
-                    ),
-                    "annot_score_list_array": self._maybe_array(
-                        stage_name, _ascores, "annot_score_list"
-                    ),
-                    "name_score_list_array": self._maybe_array(
-                        stage_name, _nscores, "name_score_list"
-                    ),
-                    "score_list_array": self._maybe_array(
-                        stage_name, _slist, "score_list"
-                    ),
-                    "fm_list_json": fm_list_json,
-                    "fsv_list_json": fsv_json,
-                    "stage_name": stage_name,
-                }
-            ],
-        )
+        self.dump_stage(stage_name, [payload])
 
     def trace_final_scores(
         self,
@@ -411,76 +416,50 @@ class TraceContext:
         fm_list: Any = None,
         fsv_list: Any = None,
     ) -> None:
-        fm_list_json = json.dumps(
-            self._write_array_sequence("final_scores", fm_list, "fm")
+        fm_stage = "final"
+        payload = self._chipmatch_payload(
+            fm_stage,
+            qaid,
+            qnid,
+            daid_list,
+            dnid_list,
+            annot_score_list,
+            name_score_list,
+            score_list,
+            fm_list,
+            fsv_list,
         )
-        fsv_json = json.dumps(fsv_list or [])
-        qnid_val = str(qnid) if qnid is not None else None
-        _daids = np.asarray(daid_list if daid_list is not None else [])
-        _dnids = np.asarray(dnid_list if dnid_list is not None else [])
-        _ascores = np.asarray(
-            annot_score_list if annot_score_list is not None else [], dtype=np.float64
-        )
-        _nscores = np.asarray(
-            name_score_list if name_score_list is not None else [], dtype=np.float64
-        )
-        _slist = np.asarray(
-            score_list if score_list is not None else [], dtype=np.float64
-        )
-
-        self._stage_rows(
-            "final_scores",
-            [
-                {
-                    "score_method": score_method,
-                    "qaid": qaid,
-                    "qnid": qnid_val,
-                    "daid_list_array": self._maybe_array(
-                        "final_scores", _daids, "daid_list"
-                    ),
-                    "dnid_list_array": self._maybe_array(
-                        "final_scores", _dnids, "dnid_list"
-                    ),
-                    "annot_score_list_array": self._maybe_array(
-                        "final_scores", _ascores, "annot_score_list"
-                    ),
-                    "name_score_list_array": self._maybe_array(
-                        "final_scores", _nscores, "name_score_list"
-                    ),
-                    "score_list_array": self._maybe_array(
-                        "final_scores", _slist, "score_list"
-                    ),
-                    "fm_list_json": fm_list_json,
-                    "fsv_list_json": fsv_json,
-                    "stage_name": "final_scores",
-                }
-            ],
-        )
+        payload = {"score_method": score_method, **payload}
+        self.dump_stage("final_scores", [payload])
 
 
-def _safe_scalar(value: Any) -> Any:
-    """Convert numpy scalar to Python scalar for JSON serialization."""
-    if isinstance(value, (np.integer,)):
-        return int(value)
-    if isinstance(value, (np.floating,)):
-        return float(value)
-    if isinstance(value, (np.bool_,)):
-        return bool(value)
-    return value
+# --------------------------------------------------------------------------- #
+# Public factory
+# --------------------------------------------------------------------------- #
 
 
 def get_trace_context(query_index: int = 0) -> TraceContext | None:
-    """Return a ``TraceContext`` if ``HOTSPOTTER_TRACE_DIR`` is set.
-
-    Environment variables read:
-      ``HOTSPOTTER_TRACE_DIR`` — base output directory
-      ``HOTSPOTTER_TRACE_RUN_ID`` — run identifier (optional)
-      ``HOTSPOTTER_TRACE_CONFIG_LABEL`` — canonical config name
-    """
+    """Return a ``TraceContext`` if ``HOTSPOTTER_TRACE_DIR`` is set."""
     if not _is_trace_enabled():
         return None
     base_dir = _trace_dir()
     config_label = _trace_config_label()
-    ctx = TraceContext(_trace_run_id(), base_dir, config_label, query_index)
-    _write_manifest(base_dir, config_label, query_index)
+    run_id = _trace_run_id()
+    ctx = TraceContext(run_id, base_dir, config_label, query_index)
+
+    manifest_path = base_dir / "trace_manifest.json"
+    entries: list[dict] = []
+    if manifest_path.exists():
+        entries = json.loads(manifest_path.read_text())
+        if not isinstance(entries, list):
+            entries = []
+    entries.append(
+        {
+            "config_label": config_label,
+            "query_index": query_index,
+            "trace_run_id": run_id,
+            "timestamp_unix": time.time(),
+        }
+    )
+    manifest_path.write_text(json.dumps(entries, indent=2, sort_keys=True))
     return ctx

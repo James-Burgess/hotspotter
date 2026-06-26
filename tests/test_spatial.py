@@ -47,9 +47,10 @@ class TestSpatialVerify:
                 correspondences=[(0, 0)],
             ),
         ]
-        result = spatial_verify(scored, query_features, db, min_inliers=3)
+        result, sv_results = spatial_verify(scored, query_features, db, min_inliers=3)
         assert result[0].sv_inliers == 0
         assert result[0].sv_homography is None
+        assert len(sv_results) == 0
 
     def test_exact_correspondences_used(self):
         """Build known keypoint pairs and verify they pass through."""
@@ -101,9 +102,13 @@ class TestSpatialVerify:
                 ],
             ),
         ]
-        result = spatial_verify(scored, query_features, db, min_inliers=4)
+        result, sv_results = spatial_verify(scored, query_features, db, min_inliers=4)
         assert result[0].sv_inliers > 0
         assert result[0].sv_homography is not None
+        assert len(sv_results) == 1
+        _, _, weights = next(iter(sv_results.values()))
+        assert len(weights) == result[0].sv_inliers
+        assert np.all(weights >= 0.0) and np.all(weights <= 1.0)
 
     def test_out_of_range_correspondences_skipped(self):
         """Correspondences with out-of-range indices are silently skipped."""
@@ -130,6 +135,7 @@ class TestSpatialVerify:
                 ],
             ),
         ]
-        result = spatial_verify(scored, query_features, db, min_inliers=3)
+        result, sv_results = spatial_verify(scored, query_features, db, min_inliers=3)
         assert result[0].sv_inliers == 0
         assert result[0].sv_homography is None
+        assert len(sv_results) == 0

@@ -69,6 +69,7 @@ class Match:
     dfx: int
     dist: float
     name_uuid: uuid.UUID | None
+    sv_weight: float | None = None
 
 
 @dataclass
