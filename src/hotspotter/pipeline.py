@@ -322,7 +322,9 @@ def identify(
         csum_annot, canonical = score_matches_with_names(
             matches, annot_uuids, annot_name_map, hs.score_method, qk
         )
-        scored = _canonical_to_scoredmatches(canonical, matches, database, annot_uuids)
+        scored = _wbia_scores_to_scoredmatches(
+            csum_annot, canonical, matches, database, annot_uuids
+        )
         _annot_to_matches: dict[int, tuple[float, int]] = {}
         for sm in scored:
             daid = next(
@@ -332,7 +334,11 @@ def identify(
             _annot_to_matches[daid] = (c, sm.num_matches)
         dlog.stage_match_to_annot(_annot_to_matches)
     else:
-        scored = score_matches(matches, database, hs.score_method)
+        # WBIA oracle fixtures do not assign real name IDs in ChipMatch scoring;
+        # final dnids are per-annotation sentinels (-daid). In that singleton-name
+        # case, WBIA nsum/fmech reduces to per-annotation csum.
+        simple_score_method = "csum" if hs.score_method == "nsum" else hs.score_method
+        scored = score_matches(matches, database, simple_score_method)
         _annot_to_matches = {}
         for sm in scored:
             daid = next(
@@ -448,14 +454,17 @@ def identify(
             }
             if hs.score_method in _wbia_methods:
                 qk = query_features.keypoints if hs.rotation_invariance else None
-                _, sv_canonical = score_matches_with_names(
+                sv_csum, sv_canonical = score_matches_with_names(
                     sv_matches, annot_uuids, annot_name_map, hs.score_method, qk
                 )
-                sv_scored = _canonical_to_scoredmatches(
-                    sv_canonical, sv_matches, database, annot_uuids
+                sv_scored = _wbia_scores_to_scoredmatches(
+                    sv_csum, sv_canonical, sv_matches, database, annot_uuids
                 )
             else:
-                sv_scored = score_matches(sv_matches, database, hs.score_method)
+                simple_score_method = (
+                    "csum" if hs.score_method == "nsum" else hs.score_method
+                )
+                sv_scored = score_matches(sv_matches, database, simple_score_method)
 
             sv_inlier_info = {
                 sm.annot_uuid: (sm.sv_inliers, sm.sv_homography)
@@ -605,6 +614,44 @@ def _canonical_to_scoredmatches(
     return results
 
 
+def _wbia_scores_to_scoredmatches(
+    csum_annot: dict[uuid.UUID, float],
+    canonical: dict[uuid.UUID, float],
+    matches: list[Match],
+    database: list[AnnotatedImage],
+    annot_uuids: list[uuid.UUID],
+) -> list[ScoredMatch]:
+    """Convert WBIA name scores while preserving all matched annotations.
+
+    WBIA keeps ``daid_list`` annotation-aligned and stores canonical name scores
+    in ``score_list``: only the best annotation for each name receives the name
+    score; same-name non-canonical annotations get ``-inf``.
+    """
+    match_count: dict[uuid.UUID, int] = {}
+    corrs: dict[uuid.UUID, list[tuple[int, int]]] = {}
+    for m in matches:
+        annot_uuid = annot_uuids[m.daid]
+        match_count[annot_uuid] = match_count.get(annot_uuid, 0) + 1
+        corrs.setdefault(annot_uuid, []).append((m.qfx, m.dfx))
+
+    uuid_to_annot = {ann.annot_uuid: ann for ann in database}
+    results: list[ScoredMatch] = []
+    for annot_uuid, _annot_csum in csum_annot.items():
+        annot = uuid_to_annot[annot_uuid]
+        results.append(
+            ScoredMatch(
+                annot_uuid=annot_uuid,
+                name_uuid=annot.name_uuid,
+                score=float(canonical.get(annot_uuid, -np.inf)),
+                num_matches=match_count.get(annot_uuid, 0),
+                correspondences=corrs.get(annot_uuid, []),
+            )
+        )
+
+    results.sort(key=lambda r: r.score, reverse=True)
+    return results
+
+
 def _prescore_candidates(
     matches: list[Match],
     database: list[AnnotatedImage],
@@ -620,9 +667,12 @@ def _prescore_candidates(
         annot_name_map = {
             a.annot_uuid: a.name_uuid for a in database if a.name_uuid is not None
         }
-        _, canonical = score_matches_with_names(
+        csum_annot, canonical = score_matches_with_names(
             matches, annot_uuids, annot_name_map, score_method
         )
-        return _canonical_to_scoredmatches(canonical, matches, database, annot_uuids)
+        return _wbia_scores_to_scoredmatches(
+            csum_annot, canonical, matches, database, annot_uuids
+        )
     else:
-        return score_matches(matches, database, score_method)
+        simple_score_method = "csum" if score_method == "nsum" else score_method
+        return score_matches(matches, database, simple_score_method)

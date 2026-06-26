@@ -71,11 +71,11 @@ checkpoints, and compares them stage-by-stage using `compare_wbia_oracles.py`.
 make test-parity
 
 # Specify oracle directory and threshold
-make test-parity ORACLE=../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-144646 PARITY_RHO=0.97
+make test-parity ORACLE=../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-173226 PARITY_RHO=0.97
 
 # Direct script
 python3 scripts/compare_to_wbia.py \
-    ../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-144646 \
+    ../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-173226 \
     --passing-rho 0.97
 ```
 
@@ -85,9 +85,10 @@ baseline_neighbor_filter, neighbor_weights, chipmatches_pre_sv,
 chipmatches_post_sv, final_scores.
 
 Exit code 0 = PASS (ρ ≥ 0.97), 2 = parity FAIL, 1 = fatal error. Current
-hotspotter-vs-WBIA parity is expected to fail (ρ = 0.3031) while Phase 2
-algorithm gaps are being closed. Status: features 100% identical, neighbor
-IDs 73% match, remaining gap in scoring amplification and SV semantics.
+hotspotter-vs-WBIA parity is expected to fail (ρ = -0.1257) while Phase 2
+algorithm gaps are being closed. Status: features 100% identical, chip sizes
+match WBIA, pre-SV annotation sets match, and the remaining gap is FLANN
+neighbor assignment divergence, scoring amplification, and SV semantics.
 
 ---
 

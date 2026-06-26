@@ -5,6 +5,59 @@ package evolves.  It complements the formal ADRs in `decisions/`.
 
 ---
 
+## 2026-06-26 — Phase 2: scoring labels, nsum default, chip-size verification
+
+### What was done
+
+1. **Scoring method alignment**: Default `HotSpotterConfig.score_method` is now
+   `nsum`, matching WBIA default configs. Plain `csum` and `nsum` are supported
+   alongside the legacy internal `*_wbia` labels.
+
+2. **Trace scoring semantics**: Default configs emit `score_method=nsum`; the
+   `score_csum` config emits `score_method=csum`. Singleton-name `nsum` behavior
+   currently reduces to per-annotation `csum` while retaining the WBIA trace label.
+
+3. **Chip-size verification**: Compared 21 common chip parquet files from the
+   latest hotspotter trace against the canonical WBIA oracle. There were 0
+   `chip_size` mismatches. Both systems write WBIA `[width, height]` order, for
+   example `[700, 401]`, `[700, 427]`, `[700, 538]`, and `[700, 615]`.
+
+4. **Comparison metrics restored**: Descriptor cosine and neighbor distance
+   metrics now report real values in the comparer output instead of the previous
+   sidecar-path failure values.
+
+### Parity results (hotspotter vs WBIA nightly)
+
+Oracle: `../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-173226/`.
+Hotspotter trace: `../artifacts/hotspotter-debug-trace/full-oracle-nsum-singleton-20260626-102528/`.
+
+| Metric | Value | Notes |
+|---|---|---|
+| Final name score ρ | **-0.1257** (threshold 0.97) | FAIL |
+| Final annot score ρ | -0.1401 | Still ranking differently |
+| Neighbor dist r | **0.9927** | Distances nearly identical |
+| Descriptor cosine | **1.0000** | Descriptors bit-identical |
+| Daid Jaccard pre-SV | **1.0000** | Candidate annotation sets match |
+| Daid Jaccard post-SV | 0.9577 | SV prunes differently |
+| Feature match Jaccard | 0.1113 | Correspondence sets still differ |
+| SV pruning agreement | 0.4762 | Same as previous run |
+| Chip dimensions | 0 mismatches / 21 common files | `[width, height]` order confirmed |
+
+The first confirmed data divergence remains `nearest_neighbors`: descriptors
+and keypoints are identical, chip dimensions match, and pre-SV candidate
+annotation sets match, but FLANN neighbor assignments still diverge enough that
+LNBNN scoring and SV produce different final rankings.
+
+### Verification
+
+```bash
+make build
+make test-unit      # 42/42 pass
+make test-parity ORACLE=../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-173226
+```
+
+---
+
 ## 2026-06-25 — Phase 2: FLANN index, descriptor order, chip fix, trace alignment
 
 ### What was done

@@ -43,9 +43,8 @@ python3 scripts/record_wbia_oracle.py --images wildme/wbia:nightly wildme/wbia:l
 
 ## Query Configurations
 
-Every WBIA image is run against **7 HotSpotter parameter permutations** (8th known
-to crash — see below). Each config × 3 query annotations = 21 identify calls per
-image.
+Every WBIA image is run against **9 HotSpotter parameter permutations**. Each
+config × 3 query annotations = 27 identify calls per image.
 
 | Config | `query_config_dict` | Tests |
 |---|---|---|
@@ -56,6 +55,8 @@ image.
 | `K6` | `sv_on=True, K=6` | More neighbors per descriptor |
 | `score_csum` | `sv_on=True, score_method=csum` | Max-csum name scoring |
 | `pre_csum` | `sv_on=True, prescore_method=csum` | Max-csum pre-SV scoring |
+| `Knorm2` | `sv_on=True, Knorm=2` | Two normalizer neighbors |
+| `kpad_fixed_0` | `sv_on=True, Kpad=0` | No extra same-name padding |
 | ~~`Knorm0`~~ | ~~`sv_on=True, Knorm=0`~~ | **Crashes WBIA** — divide-by-zero in `build_chipmatches` |
 
 All configs carry `pipeline_root="vsmany"` and `fg_on=False` (foreground feature
@@ -102,7 +103,7 @@ python3 scripts/compare_to_wbia.py \
   --passing-rho 0.97
 ```
 
-This runs `hotspotter.identify()` with all 7 canonical configs against the same
+This runs `hotspotter.identify()` with all 9 canonical configs against the same
 test images, writes parquet traces, and passes both oracle dumps to
 `compare_wbia_oracles.py`. Hotspotter parity configs currently force
 `fg_on=False`, `kpad_policy="dynamic"`, and `knorm=1`.
@@ -134,41 +135,39 @@ python3 scripts/compare_wbia_oracles.py \
 | 1 | `--fail-on-diff` set and bit-level differences found |
 | 2 | Parity FAIL — mean final name score ρ below threshold |
 
-### Terminal Output (Hotspotter vs WBIA Nightly, 2026-06-25)
+### Terminal Output (Hotspotter vs WBIA Nightly, 2026-06-26)
 
-Latest run after Phase 2 fixes (query-excluded FLANN, batch-order database,
-negative-bbox chip fix, knorm/kpad configs, 19-row traces):
+Latest run after trace alignment, scoring-method label fixes, nsum singleton
+handling, and chip-size verification:
 
 ```
 Stages compared: 18    Stages with differences: 18
-Scalar cell differences: 6692    Array differences: 1036
-All 9 configs run; 21 files matched per stage
+All 9 configs run; 21 common files matched per trace stage
 
 Rich Metrics
 Metric                               Mean    Count    Range
 ---------------------------------------------------------------
-Neighbor dist Pearson r             0.0000      21    npy path bug in comparer
-Actual neighbor dist Pearson r      0.9789    1538    per-row from npy files
-Neighbor ID exact match             0.7298    7690    col0=0.904 col1=0.812 col2=0.713 col3=0.642 col4=0.577
-Descriptor cosine similarity        0.0000     399    npy path bug in comparer
-Actual descriptors                  identical 36,423  all 19 annots bit-identical
-Final annot score Spearman ρ        0.1136       9    −0.3003–0.7957
-Final name score Spearman ρ         0.3031       9    −0.0258–0.5335
-Feature match Jaccard               0.0993      21    0.0000–0.2221
+Neighbor dist Pearson r             0.9927      21    0.9893–0.9956
+Descriptor cosine similarity        1.0000     399    1.0000–1.0000
+Daid Jaccard pre-SV                 1.0000      21    1.0000–1.0000
+Daid Jaccard post-SV                0.9577      21    0.8889–1.0000
+Final annot score Spearman ρ       -0.1401      10   -0.5893–0.7379
+Final name score Spearman ρ        -0.1257      10   -0.4180–0.2508
+Feature match Jaccard               0.1113      21    0.0000–0.7812
 SV pruning agreement                0.4762      21    0.0000–1.0000
 
-Parity check: mean final name score Spearman ρ = 0.3031 (threshold 0.970)  FAIL
+Parity check: mean final name score Spearman ρ = -0.1257 (threshold 0.970)  FAIL
 ```
 
-Key findings since baseline: features are **100% identical** (36,423
-descriptors match). Neighbor arrays have matching [N,5] shapes. Neighbor
-IDs match at 73% (was 7.2% before descriptor-order fix). Neighbor
-distances correlate at r=0.98 (comparer reports 0.00 due to npy path
-resolution bug).
+Key findings since baseline: features are **100% identical**. Descriptor
+cosine now reports 1.0 directly from the comparer. Chip dimensions also match
+WBIA exactly in the latest trace: 21 common chip files compared with 0
+`chip_size` mismatches, using WBIA `[width, height]` order such as `[700, 401]`.
+Neighbor distances correlate at r=0.9927 and pre-SV candidate annotation sets
+match exactly.
 
-The ρ = 0.30 reflects remaining FLANN non-determinism (27% neighbor
-divergence from different pyflann/numpy Docker image versions) and SV
-semantics (47.6% agreement). See
+The ρ = -0.1257 reflects remaining FLANN neighbor assignment divergence and SV
+semantics (47.6% agreement), with scoring amplifying those differences. See
 `docs/development/hotspotter-parity-discrepancies.md` for full analysis.
 
 ### HTML Report
@@ -190,13 +189,13 @@ Reports are written to `artifacts/wbia-oracle/comparisons/<run_a>__vs__<run_b>.h
 | Metric | What it measures | Par with ρ≥0.97? |
 |---|---|---|
 | Neighbor dist Pearson r | Correlation of FLANN distance vectors per query | ~0.993 always |
-| Neighbor ID exact match | Fraction of identical neighbor assignments | 0.73 (hotspotter vs WBIA) |
+| Neighbor ID exact match | Fraction of identical neighbor assignments | ~0.70–0.75 (hotspotter vs WBIA) |
 | Descriptor cosine similarity | Pairwise cosine between same-annot descriptors | 1.0 (bit-identical verified) |
 | Daid Jaccard pre_sv | Set overlap of candidate annotation lists | 1.0 always |
-| Daid Jaccard post_sv | Set overlap after spatial verification | 0.945–1.0 |
+| Daid Jaccard post_sv | Set overlap after spatial verification | ~0.96 |
 | Final annot score Spearman ρ | Rank correlation of per-annotation scores | Parity target |
 | Final name score Spearman ρ | Rank correlation of per-individual scores | **≥0.97 pass** |
-| Feature match Jaccard | Overlap of feature correspondence pairs | 0.0993 (hotspotter vs WBIA) |
+| Feature match Jaccard | Overlap of feature correspondence pairs | 0.1113 (hotspotter vs WBIA) |
 | SV pruning agreement | Do both runs prune the same annotations? | 0.4762 (hotspotter vs WBIA) |
 
 ## What We Know About WBIA Determinism

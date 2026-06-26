@@ -22,7 +22,7 @@ class TestHotSpotterConfig:
         c = HotSpotterConfig()
         assert c.knn == 4
         assert c.knorm == 1
-        assert c.score_method == "csum"
+        assert c.score_method == "nsum"
         assert c.sv_on is True
 
     def test_invalid_knn(self):
