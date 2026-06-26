@@ -48,6 +48,12 @@ class HotSpotterConfig(BaseModel):
         default=True,
         description="Allow matches to annotations sharing the query's name (WBIA default: True)",
     )
+    can_match_sameimg: bool = Field(
+        default=False,
+        description="Allow matches to annotations in the same image as the query "
+        "(WBIA default: False). When False, same-image ('contact') annotations "
+        "are added to the impossible-daids filter.",
+    )
     sqrd_dist_on: bool = Field(
         default=False,
         description="Keep distances in squared-norm space (no sqrt). WBIA default: False.",
@@ -78,7 +84,11 @@ class HotSpotterConfig(BaseModel):
     )
     sv_on: bool = Field(default=True, description="Enable spatial verification")
     sv_n_name_shortlist: int = Field(default=40, ge=1)
-    sv_n_annot_per_name: int = Field(default=3, ge=1)
+    sv_n_annot_per_name: int = Field(
+        default=3,
+        ge=1,
+        description="Max annotations per name in SV shortlist (WBIA default: 3).",
+    )
     sv_xy_thresh: float | None = Field(default=0.01, gt=0.0)
     sv_scale_thresh: float | None = Field(default=2.0, gt=0.0)
     sv_ori_thresh: float | None = Field(
@@ -91,6 +101,11 @@ class HotSpotterConfig(BaseModel):
         default=True,
         description="Bias RANSAC sampling toward high-FG features (WBIA weight_inliers). "
         "Does NOT multiply scores.",
+    )
+    sv_use_kp_affine_inliers: bool = Field(
+        default=False,
+        description="Use affine inliers (svtup[3]) instead of homography-refined "
+        "inliers (svtup[0]) for keep/spatial pruning (WBIA use_kp_affine_inliers).",
     )
     sv_sver_output_weighting: bool = Field(
         default=False,

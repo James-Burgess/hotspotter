@@ -23,21 +23,6 @@ import numpy as np
 from hotspotter.data import AnnotatedImage, FeatureSet, ScoredMatch
 
 
-def _compute_dlen_sqrd(kpts: np.ndarray, image: np.ndarray) -> float:
-    """Squared diagonal length of the keypoint extent.
-
-    Mirrors WBIA's ``vt.get_kpts_dlen_sqrd``.  Falls back to the
-    full image diagonal when there are too few keypoints.
-    """
-    if kpts.shape[0] >= 2:
-        xs = kpts[:, 0]
-        ys = kpts[:, 1]
-        dlen_sqrd = float((xs.max() - xs.min()) ** 2 + (ys.max() - ys.min()) ** 2)
-        if dlen_sqrd > 0:
-            return dlen_sqrd
-    return float(image.shape[0] ** 2 + image.shape[1] ** 2)
-
-
 def spatial_verify(
     matches: list[ScoredMatch],
     query_features: FeatureSet,
@@ -50,6 +35,8 @@ def spatial_verify(
     use_chip_extent: bool = True,
     weight_inliers: bool = True,
     sver_output_weighting: bool = False,
+    use_kp_affine_inliers: bool = True,
+    dist_lookup: dict[tuple[int, int, int], float] | None = None,
 ) -> tuple[
     list[ScoredMatch],
     dict[uuid.UUID, tuple[list[int], list[int], np.ndarray]],
@@ -116,10 +103,30 @@ def spatial_verify(
         if len(fm) < min_inliers:
             continue
 
+        if dist_lookup is not None:
+            ann_idx_val = ann_idx
+            daid_idx = ann_idx_val
+            weights = np.array(
+                [
+                    dist_lookup.get((daid_idx, int(qfx), int(dfx)), 0.0)
+                    for qfx, dfx in fm
+                ],
+                dtype=np.float64,
+            )
+            sort_order = np.argsort(weights)[::-1]
+            fm = fm[sort_order]
+
         dlen_sqrd2 = None
         if use_chip_extent:
+            chip_h, chip_w = db_ann.image.shape[:2]
+            dlen_sqrd2 = float(chip_w**2 + chip_h**2)
+        elif len(fm) >= 2:
             matching_db_kpts = db_kp[fm[:, 1]]
-            dlen_sqrd2 = _compute_dlen_sqrd(matching_db_kpts, db_ann.image)
+            xs = matching_db_kpts[:, 0]
+            ys = matching_db_kpts[:, 1]
+            dlen_sqrd2 = float((xs.max() - xs.min()) ** 2 + (ys.max() - ys.min()) ** 2)
+            if dlen_sqrd2 <= 0:
+                dlen_sqrd2 = None
 
         match_weights = np.ones(len(fm), dtype=np.float64)
         svtup = sver.spatially_verify_kpts(
@@ -132,26 +139,52 @@ def spatial_verify(
             dlen_sqrd2=dlen_sqrd2,
             min_nInliers=min_inliers,
             match_weights=match_weights,
-            returnAff=False,
+            returnAff=True,
             refine_method="homog",
         )
         if svtup is None:
             continue
 
-        refined_inliers, refined_errors, H = svtup[0:3]
-        inliers = int(len(refined_inliers))
+        refined_inliers, refined_errors, H, aff_inliers, aff_errors, Aff = svtup
+        if use_kp_affine_inliers and aff_inliers is not None:
+            sv_inliers = aff_inliers
+        else:
+            sv_inliers = refined_inliers
+
+        inliers = int(len(sv_inliers))
         if inliers < min_inliers:
             continue
 
         sm.sv_inliers = inliers
         sm.sv_homography = H
 
-        inlier_fm = fm[refined_inliers]
+        inlier_fm = fm[sv_inliers]
         inlier_qfxs = inlier_fm[:, 0].tolist()
         inlier_dfxs = inlier_fm[:, 1].tolist()
 
-        if sver_output_weighting and xy_thresh is not None and dlen_sqrd2 is not None:
-            homog_xy_errors = refined_errors[0].take(refined_inliers, axis=0)
+        if (
+            sver_output_weighting
+            and xy_thresh is not None
+            and dlen_sqrd2 is not None
+            and aff_inliers is not None
+        ):
+            homog_xy_errors = refined_errors[0]
+            homog_inlier_set = set(refined_inliers)
+            aff_to_homog_idx = {fx: hi for hi, fx in enumerate(refined_inliers)}
+            xy_thresh_sqrd = dlen_sqrd2 * xy_thresh
+            if xy_thresh_sqrd > 0:
+                weights = np.ones(inliers, dtype=np.float64)
+                for i, fx in enumerate(sv_inliers):
+                    if fx in homog_inlier_set:
+                        h_idx = aff_to_homog_idx[fx]
+                        err = homog_xy_errors[h_idx]
+                        w = 1.0 - np.sqrt(np.clip(err / xy_thresh_sqrd, 0.0, 1.0))
+                        weights[i] = w
+                homog_err_weight = weights
+            else:
+                homog_err_weight = np.ones(inliers, dtype=np.float64)
+        elif sver_output_weighting and xy_thresh is not None and dlen_sqrd2 is not None:
+            homog_xy_errors = refined_errors[0].take(sv_inliers, axis=0)
             xy_thresh_sqrd = dlen_sqrd2 * xy_thresh
             if xy_thresh_sqrd > 0:
                 ratio = np.clip(homog_xy_errors / xy_thresh_sqrd, 0.0, 1.0)

@@ -7,3 +7,6 @@
 [submodule "wbia-tpl-pyhesaff"]
 	path = wbia-tpl-pyhesaff
 	url = https://github.com/WildMeOrg/wbia-tpl-pyhesaff.git
+[submodule "wbia-tpl-pyflann"]
+	path = wbia-tpl-pyflann
+	url = https://github.com/WildMeOrg/wbia-tpl-pyflann.git

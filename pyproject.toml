@@ -12,7 +12,6 @@ dependencies = [
     "opencv-contrib-python-headless==4.7.0.72",
     "pydantic>=2.0",
     "scipy>=1.10,<2",
-    "wbia-pyflann>=4.0.4",
     "wbia-pyhesaff>=4.0.0",
 ]
 
@@ -29,4 +28,5 @@ testpaths = ["tests"]
 markers = [
     "slow: tests that take a long time (not run by default)",
     "replay: tests that compare wbia-core against recorded WBIA fixtures",
+    "parity: tests that compare hotspotter against WBIA oracle",
 ]

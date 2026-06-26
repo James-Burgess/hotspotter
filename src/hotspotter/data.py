@@ -55,6 +55,7 @@ class AnnotatedImage:
 
     annot_uuid: uuid.UUID
     name_uuid: uuid.UUID | None
+    image_uuid: uuid.UUID | None = None
     image: np.ndarray  # [H, W] or [H, W, 3] uint8
     features: FeatureSet
     bbox: tuple[int, int, int, int]  # (x, y, w, h)
@@ -80,6 +81,7 @@ class ScoredMatch:
     name_uuid: uuid.UUID | None
     score: float
     num_matches: int = 0
+    annot_csum: float = 0.0
     correspondences: list[tuple[int, int]] = field(default_factory=list)
     sv_inliers: int = 0
     sv_homography: np.ndarray | None = None

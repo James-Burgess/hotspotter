@@ -171,7 +171,7 @@ def score_matches_with_names(
     annot_name_map: dict[uuid.UUID, uuid.UUID],
     score_method: str = "nsum_wbia",
     query_keypoints: np.ndarray | None = None,
-) -> tuple[dict[uuid.UUID, float], dict[uuid.UUID, float]]:
+) -> tuple[dict[uuid.UUID, float], dict[uuid.UUID, float], dict[uuid.UUID, float]]:
     """Full WBIA scoring chain: annot csum → name scoring → canonical.
 
     Args:
@@ -184,7 +184,8 @@ def score_matches_with_names(
             ``query_rotation_heuristic`` XY-dedup in fmech.
 
     Returns:
-        ``(csum_annot_scores, canonical_scores)`` — both ``{annot_uuid: score}``.
+        ``(csum_annot_scores, name_scores, canonical_scores)`` — three
+        ``{annot_uuid or name_uuid: score}`` dicts.
     """
     csum: dict[uuid.UUID, float] = {}
     for m in matches:
@@ -202,4 +203,4 @@ def score_matches_with_names(
         raise ValueError(f"Unknown score_method: {score_method!r}")
 
     canonical = align_name_scores_with_annots(csum, annot_name_map, name_scores)
-    return csum, canonical
+    return csum, name_scores, canonical
