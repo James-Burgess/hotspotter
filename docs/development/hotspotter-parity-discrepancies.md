@@ -1,7 +1,7 @@
 # Hotspotter Parity Discrepancies
 
 Known gaps between `hotspotter` library output and WBIA oracle output.
-Findings from actual parquet-to-parquet comparison (2026-06-25).
+Findings from actual parquet-to-parquet comparison (latest run: 2026-06-26).
 
 ## Run The Comparison
 
@@ -29,9 +29,12 @@ python3 ../scripts/record_wbia_oracle.py
 # with trace_manifest.json at the run root
 ```
 
-## Current Oracle Baseline (2026-06-25)
+## Current Oracle Baseline (2026-06-26)
 
 Latest nightly oracle: `wildme-wbia-nightly-20260625-173226`
+
+Latest hotspotter trace checked:
+`../artifacts/hotspotter-debug-trace/full-oracle-nsum-singleton-20260626-102528/`
 
 9 configs × 3 queries = 27 entries. Knorm0 excluded (crashes WBIA with
 divide-by-zero).  sv_on_n20 / kpad_fixed_0 are missing from WBIA's
@@ -60,27 +63,29 @@ between the two systems is perfect (hotspotter 0-based AIDs map 1:1 to WBIA
 ## Measured Metrics (Hotspotter vs WBIA Nightly)
 
 Oracle: `wildme-wbia-nightly-20260625-173226`.
+Hotspotter trace: `full-oracle-nsum-singleton-20260626-102528`.
 21 matched files across 7 working configs (sv_on_true, sv_on_false, K2, K6,
 score_csum, pre_csum, Knorm2). `kpad_fixed_0` files partially missing in WBIA.
 
 | Metric | Mean | Count | Range | Notes |
 |---|---|---|---|---|
-| Neighbor dist Pearson r | 0.00 | 21 | — | **Comparer bug**: npy path broken |
-| Actual neighbor dist r | **0.9789** | 1538 | — | Loaded npy manually, per-row r |
-| Neighbor ID exact match | **72.98%** | 7690 pairs | 90.4% (col 0) – 57.7% (col 4) | Col 0 match drops per column |
-| Descriptor cosine similarity | 0.00 | 399 | — | **Comparer bug**: npy path broken |
-| All 19 annotation descriptors | **bit-identical** | 36,423 | — | PyHesaff output matches exactly |
-| Final annot score Spearman ρ | 0.1136 | 9 | −0.3003 – 0.7957 | |
-| Final name score ρ | **0.3031** | 9 | −0.0258 – 0.5335 | |
-| Feature match Jaccard | 0.0993 | 21 | 0.0000 – 0.2221 | |
+| Neighbor dist Pearson r | **0.9927** | 21 | 0.9893 – 0.9956 | Distances nearly identical |
+| Descriptor cosine similarity | **1.0000** | 399 | 1.0000 – 1.0000 | Descriptors bit-identical |
+| Daid Jaccard pre-SV | **1.0000** | 21 | 1.0000 – 1.0000 | Candidate annotation sets match |
+| Daid Jaccard post-SV | 0.9577 | 21 | 0.8889 – 1.0000 | SV still prunes differently |
+| Final annot score Spearman ρ | −0.1401 | 10 | −0.5893 – 0.7379 | |
+| Final name score ρ | **−0.1257** | 10 | −0.4180 – 0.2508 | |
+| Feature match Jaccard | 0.1113 | 21 | 0.0000 – 0.7812 | |
 | SV pruning agreement | 0.4762 | 21 | 0.0000 – 1.0000 | |
 
-Parity threshold is ρ ≥ 0.97. Current state: **FAIL (ρ = 0.3031)**.
+Parity threshold is ρ ≥ 0.97. Current state: **FAIL (ρ = −0.1257)**.
 
-Key finding: features are **100% identical** (descriptors, keypoints, chip
-pixels all match). Neighbor distances correlate at r=0.98. 73% of neighbor
-IDs are identical. The remaining gap comes from:
-1. The 27% non-matching FLANN neighbors (different pyflann/numpy versions
+Key finding: features are **100% identical** (descriptors and keypoints match).
+Chip dimensions now match WBIA exactly in parquet traces: 21 common chip files
+compared, **0 `chip_size` mismatches**. Examples: aid 1 `[700, 401]`, aid 2
+`[700, 427]`, aid 6 `[700, 538]`, aid 17 `[700, 615]` in both systems.
+Neighbor distances correlate at r≈0.993. The remaining gap comes from:
+1. The ~25–30% non-matching FLANN neighbors (different pyflann/numpy versions
    across Docker images produce different KD-tree structures)
 2. Scoring amplification — small neighbor differences cascade through
    LNBNN → csum → name aggregation → SV
@@ -97,6 +102,7 @@ IDs are identical. The remaining gap comes from:
 | Chip extraction | Pass raw bbox to affine (negative coords via BORDER_CONSTANT) | 19/19 kpt counts match WBIA |
 | Trace row counts | All stages write 19 rows via `trace_chips_and_features` batch | Row counts match WBIA |
 | Trace chips schema | `chip_fpath`, `chip_size` columns (WBIA-compatible) | Schema aligned |
+| Chip dimensions | Trace `chip_size` uses WBIA `[width, height]`; latest run has 0/21 mismatched chip files | Dimensions aligned |
 | Spatial verification | `vtool.spatially_verify_kpts()` replaces `cv2.findHomography` | Same vtool family as WBIA |
 | `fm_list` trace | `Nx2` `[qfx, dfx]` arrays as `.npy` sidecars with `values` | Jaccard now computable |
 | Docker deps | Vendored `wbia-vtool 4.0.3` preserved; runtime deps explicit | vtool.sver imports |
@@ -118,21 +124,7 @@ LNBNN weights → different scores.
 Docker images, or accept this as the FLANN noise floor (~0.99 ρ for
 WBIA-vs-WBIA is the theoretical ceiling).
 
-### 2. Comparer npy Path Resolution — HIGH
-
-The `compare_wbia_oracles.py` script can't load hotspotter `.npy` sidecars
-because the metadata paths point to `/artifacts/wbia-oracle/...` (inside
-the Docker container), not the actual host path `/tmp/hotspotter-trace-...`.
-This makes `neighbor_dist_pearson_r` and `descriptor_cosine` always report
-0.00 even though the actual data shows r=0.98 and descriptors are identical.
-
-**Impact**: Rich metrics are misleading; human analysis requires manual npy
-loading to confirm structural correctness.
-
-**Fix path**: Either write paths relative to trace root, or teach the
-comparer to resolve paths by searching the trace directory.
-
-### 3. Spatial Verification Semantics — MEDIUM
+### 2. Spatial Verification Semantics — MEDIUM
 
 Hotspotter calls `vtool.spatially_verify_kpts()` but SV pruning agreement
 is 0.4762 — half of annotations pruned differently from WBIA.
@@ -143,9 +135,9 @@ drift even when pre-SV matches are identical.
 **Fix path**: Align match weights, dlen/extent inputs, refine method,
 shortlist ordering, and post-SV score update to match WBIA.
 
-### 4. Scoring Amplification — MEDIUM
+### 3. Scoring Amplification — MEDIUM
 
-With 73% matching neighbor IDs, final name ρ is only 0.30. The LNBNN
+With ~70–75% matching neighbor IDs, final name ρ is still failing. The LNBNN
 weighting → csum → name-level aggregation chain amplifies small neighbor
 differences. The scoring formulas (fmech/nsum, max-csum, canonical
 alignment) are correct, but they operate on different input match sets.
@@ -156,11 +148,11 @@ from different neighbor assignments.
 **Fix path**: Reduce neighbor divergence first (fix #1), then check whether
 scoring produces matching output for matching neighbors.
 
-### 5. Scoring Method Names — LOW
+### 4. Scoring Method Names — LOW
 
-WBIA `score_method="csum"` means max-csum name scoring. Hotspotter names
-this `"csum_wbia"`. The `compare_to_wbia.py` script maps names correctly,
-but manual runs can misconfigure.
+WBIA default scoring is `score_method="nsum"`; `score_method="csum"` remains
+supported for the csum configs. Hotspotter traces now emit `nsum` for default
+configs and `csum` for `score_csum`.
 
 **Fix path**: Align hotspotter names to WBIA semantics, or keep mapping shim.
 
@@ -173,8 +165,8 @@ but manual runs can misconfigure.
 | `sv_on_n20` | `sv_on=True, n=20` | `sv_on=True, num_return=20, kpad_policy=dynamic, knorm=1` |
 | `K2` | `sv_on=True, K=2` | `sv_on=True, knn=2, kpad_policy=dynamic, knorm=1` |
 | `K6` | `sv_on=True, K=6` | `sv_on=True, knn=6, kpad_policy=dynamic, knorm=1` |
-| `score_csum` | `sv_on=True, score_method=csum` | `sv_on=True, score_method=csum_wbia, kpad_policy=dynamic, knorm=1` |
-| `pre_csum` | `sv_on=True, prescore_method=csum` | `sv_on=True, prescore_method=csum_wbia, kpad_policy=dynamic, knorm=1` |
+| `score_csum` | `sv_on=True, score_method=csum` | `sv_on=True, score_method=csum, kpad_policy=dynamic, knorm=1` |
+| `pre_csum` | `sv_on=True, prescore_method=csum` | `sv_on=True, prescore_method=csum, kpad_policy=dynamic, knorm=1` |
 | `Knorm2` | `sv_on=True, Knorm=2` | `sv_on=True, knorm=2, kpad_policy=dynamic` |
 | `kpad_fixed_0` | `sv_on=True, Kpad=0` | `sv_on=True, kpad_policy=fixed, kpad=0, knorm=1` |
 
@@ -203,10 +195,8 @@ All configs carry `pipeline_root="vsmany"` and `fg_on=False`.
 1. **FLANN/pyflann version alignment** — match WBIA Docker image's pyflann/numpy
    versions in hotspotter's Dockerfile to eliminate remaining 27% neighbor
    divergence.
-2. **Comparer npy path resolution** — fix sidecar paths or teach the comparer
-   to resolve them, so rich metrics report real values.
-3. **Spatial verification semantics** — align vtool inputs to raise SV
+2. **Spatial verification semantics** — align vtool inputs to raise SV
    agreement from 47.6%.
-4. **Scoring pipeline audit** — verify fmech/nsum/csum produce identical
+3. **Scoring pipeline audit** — verify fmech/nsum/csum produce identical
    output given identical neighbors (unit test with shared reference data).
-5. **Automated pytest parity test** — once metrics are stable, add CI gate.
+4. **Automated pytest parity test** — once metrics are stable, add CI gate.

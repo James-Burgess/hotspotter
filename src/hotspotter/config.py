@@ -31,7 +31,7 @@ class HotSpotterConfig(BaseModel):
         description="'fixed' uses kpad value; 'dynamic' computes from impossible annots",
     )
     score_method: Literal["csum", "nsum", "csum_wbia", "nsum_wbia", "sumamech"] = Field(
-        default="csum",
+        default="nsum",
         description=(
             "Simple: 'csum' (per-annot sum), 'nsum' (per-annot avg). "
             "WBIA: 'nsum_wbia' (fmech), 'csum_wbia' (max-per-name), 'sumamech'"

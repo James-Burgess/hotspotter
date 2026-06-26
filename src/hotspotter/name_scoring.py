@@ -191,11 +191,11 @@ def score_matches_with_names(
         annot_uuid = annot_uuids[m.daid]
         csum[annot_uuid] = csum.get(annot_uuid, 0.0) + m.dist
 
-    if score_method == "csum_wbia":
+    if score_method in {"csum", "csum_wbia"}:
         name_scores = compute_maxcsum_name_score(csum, annot_name_map)
     elif score_method == "sumamech":
         name_scores = compute_sumamech_name_score(csum, annot_name_map)
-    elif score_method == "nsum_wbia":
+    elif score_method in {"nsum", "nsum_wbia"}:
         matches_by_name = group_matches_by_name(matches)
         name_scores = compute_fmech_score(matches_by_name, query_keypoints)
     else:
