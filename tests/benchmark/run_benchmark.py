@@ -119,11 +119,11 @@ def main():
         help="Don't stop containers after run",
     )
     parser.add_argument(
-        "--flann-algorithm",
+        "--knn-backend",
         type=str,
-        default="kdtree",
-        choices=["kdtree", "exact"],
-        help="FLANN search algorithm (default: kdtree)",
+        default="exact",
+        choices=["exact", "flann", "faiss"],
+        help="KNN backend (default: exact)",
     )
 
     args = parser.parse_args()
@@ -161,7 +161,7 @@ def main():
         "species": args.species,
         "seed": args.seed,
         "targets": args.targets,
-        "flann_algorithm": args.flann_algorithm,
+        "knn_backend": args.knn_backend,
         "results_dir": str(results_dir),
     }
 
@@ -170,7 +170,7 @@ def main():
         f"Running {len(targets)} targets with {len(subset.annotations)} annotations, "
         f"{len(subset.query_indices)} queries → {results_dir}"
     )
-    run_config = {**DEFAULT_CONFIG, "flann_algorithm": args.flann_algorithm}
+    run_config = {**DEFAULT_CONFIG, "knn_backend": args.knn_backend}
     aggregate = run_benchmark(
         subset, targets, results_dir, run_config, cli_args=cli_args
     )

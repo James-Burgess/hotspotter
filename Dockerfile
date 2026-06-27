@@ -39,6 +39,14 @@ ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.6
 RUN pip3 install --no-cache-dir --no-deps ./wbia-utool/
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.5.dev10
 RUN pip3 install --no-cache-dir --no-deps ./wbia-tpl-pyflann/
+# Replace the compiled libflann.so with WBIA's exact binary for cross-process
+# determinism. The Python module and ctypes structs in wbia-tpl-pyflann match
+# WBIA's definition, but the C++ kd-tree construction is non-deterministic at
+# the OpenMP level regardless of seed — bit-exact KNN parity is impossible with
+# any FLANN backend. This .so at least uses the same random-number generator
+# implementation as WBIA's build.
+RUN cp ./vendor/libflann_wb.so \
+       /usr/local/lib/python3.10/dist-packages/pyflann/lib/libflann.so
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.3
 RUN pip3 install --no-cache-dir --no-deps ./wbia-vtool/
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.0

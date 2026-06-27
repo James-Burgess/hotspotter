@@ -24,8 +24,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INFRA_ROOT = ROOT.parent
 PATCHES_DIR = INFRA_ROOT / "patches"
-BATCH_JSON = INFRA_ROOT / "batches" / "zebra_coco.json"
-BATCH_IMAGE_DIR = INFRA_ROOT / "batches" / "images"
+DEFAULT_BATCH_JSON = INFRA_ROOT / "batches" / "zebra_coco.json"
+DEFAULT_BATCH_IMAGE_DIR = INFRA_ROOT / "batches" / "images"
 ARTIFACT_ROOT = INFRA_ROOT / "artifacts" / "wbia-oracle"
 
 DEFAULT_IMAGES = [
@@ -57,7 +57,9 @@ def _write_incontainer_script(run_dir: Path, batch_path: str, image_dir: str) ->
     return dst
 
 
-def _record_one_image(image: str, run_id: str, run_dir: Path) -> int:
+def _record_one_image(
+    image: str, run_id: str, run_dir: Path, batch_json: Path, image_dir: Path
+) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     db_dir = run_dir / "db"
     db_dir.mkdir(exist_ok=True)
@@ -71,8 +73,8 @@ def _record_one_image(image: str, run_id: str, run_dir: Path) -> int:
     manifest = {
         "run_id": run_id,
         "wbia_image": image,
-        "batch_json": str(BATCH_JSON),
-        "image_dir": str(BATCH_IMAGE_DIR),
+        "batch_json": str(batch_json),
+        "image_dir": str(image_dir),
         "started_unix": time.time(),
     }
     (run_dir / "manifest.host.json").write_text(json.dumps(manifest, indent=2))
@@ -107,9 +109,9 @@ def _record_one_image(image: str, run_id: str, run_dir: Path) -> int:
         "-v",
         f"{recorder}:/patches/recorder.py:ro",
         "-v",
-        f"{BATCH_JSON}:/input/batch50.json:ro",
+        f"{batch_json}:/input/batch50.json:ro",
         "-v",
-        f"{BATCH_IMAGE_DIR}:/input/batch50_images:ro",
+        f"{image_dir}:/input/batch50_images:ro",
         "-v",
         f"{ARTIFACT_ROOT}:/artifacts/wbia-oracle",
         "-v",
@@ -154,24 +156,40 @@ def _record_one_image(image: str, run_id: str, run_dir: Path) -> int:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--images", nargs="+", default=DEFAULT_IMAGES)
+    parser.add_argument(
+        "--batch-json",
+        type=Path,
+        default=DEFAULT_BATCH_JSON,
+        help="batch.json to run (default: zebra_coco.json)",
+    )
+    parser.add_argument(
+        "--image-dir",
+        type=Path,
+        default=DEFAULT_BATCH_IMAGE_DIR,
+        help="flat image directory referenced by the batch",
+    )
+    parser.add_argument(
+        "--run-id-prefix",
+        default="batch50",
+        help="prefix for the run-id/artifact dir (default: batch50)",
+    )
     parser.add_argument("--keep-containers", action="store_true")
     parser.add_argument("--timeout", type=int, default=3600)
     args = parser.parse_args(argv)
 
-    if not BATCH_JSON.exists():
-        print(f"ERROR: batch JSON not found: {BATCH_JSON}", file=sys.stderr)
-        print(
-            "  Run: python scripts/create_batch_50.py first (inside Docker)",
-            file=sys.stderr,
-        )
+    batch_json = args.batch_json.resolve()
+    image_dir = args.image_dir.resolve()
+
+    if not batch_json.exists():
+        print(f"ERROR: batch JSON not found: {batch_json}", file=sys.stderr)
         return 1
 
-    if not BATCH_IMAGE_DIR.exists():
-        print(f"ERROR: image dir not found: {BATCH_IMAGE_DIR}", file=sys.stderr)
+    if not image_dir.exists():
+        print(f"ERROR: image dir not found: {image_dir}", file=sys.stderr)
         return 1
 
-    print(f"Batch: {BATCH_JSON.name} ({BATCH_JSON.stat().st_size} bytes)")
-    print(f"Images: {len(list(BATCH_IMAGE_DIR.glob('*.jpg')))} files")
+    print(f"Batch: {batch_json.name} ({batch_json.stat().st_size} bytes)")
+    print(f"Images: {len(list(image_dir.glob('*.jpg')))} files")
     print(f"Artifacts → {ARTIFACT_ROOT}")
     print(f"Images to run: {len(args.images)}")
     for img in args.images:
@@ -182,9 +200,9 @@ def main(argv=None):
     failed = []
     for image in args.images:
         safe_img = _safe_name(image)
-        run_id = f"{safe_img}-batch50-{time.strftime('%Y%m%d-%H%M%S')}"
+        run_id = f"{safe_img}-{args.run_id_prefix}-{time.strftime('%Y%m%d-%H%M%S')}"
         run_dir = ARTIFACT_ROOT / run_id
-        rc = _record_one_image(image, run_id, run_dir)
+        rc = _record_one_image(image, run_id, run_dir, batch_json, image_dir)
         if rc != 0:
             failed.append(image)
 
