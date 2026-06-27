@@ -139,7 +139,7 @@ def identify(
         db_to_original.append(i)
     db_remap = np.array(db_to_original, dtype=np.int32)
 
-    if hs.flann_algorithm == "exact":
+    if hs.knn_backend == "exact":
         import numpy as _np
 
         all_descs = _np.concatenate([fs.descriptors for fs in db_feature_sets], axis=0)
@@ -158,11 +158,13 @@ def identify(
         )
         raw_dists, raw_labels = exact_knn(query_features, db_feats, k_total)
     else:
+        backend = "pyflann" if hs.knn_backend == "flann" else "faiss"
         global_index, _annot_of_desc_local, feat_of_desc = build_global_index(
             db_feature_sets,
             algorithm=hs.flann_algorithm,
             trees=hs.flann_trees,
             random_seed=hs.flann_random_seed,
+            backend=backend,
         )
         annot_of_desc = db_remap[_annot_of_desc_local]
         n_total = annot_of_desc.shape[0]
@@ -173,6 +175,7 @@ def identify(
             k_total,
             checks=hs.flann_checks,
             cores=hs.flann_cores,
+            backend=backend,
         )
 
     dlog.stage_global_index(db_feature_sets, annot_of_desc)
@@ -434,12 +437,15 @@ def identify(
         _prescored = scored
         if hs.prescore_method != hs.score_method:
             _prescored = _prescore_candidates(matches, database, hs.prescore_method)
-        sver_candidates = make_sver_shortlist(
-            _prescored,
-            n_names=hs.sv_n_name_shortlist,
-            n_annots_per_name=hs.sv_n_annot_per_name,
-            score_method=hs.score_method,
-        )
+        if hs.sv_verify_all:
+            sver_candidates = list(_prescored)
+        else:
+            sver_candidates = make_sver_shortlist(
+                _prescored,
+                n_names=hs.sv_n_name_shortlist,
+                n_annots_per_name=hs.sv_n_annot_per_name,
+                score_method=hs.score_method,
+            )
         dist_lookup: dict[tuple[int, int, int], float] = {}
         for m in matches:
             dist_lookup[(m.daid, m.qfx, m.dfx)] = m.dist
@@ -539,11 +545,13 @@ def identify(
                 if nu is not None and nu in sv_name_scores:
                     _name_scores[nu] = sv_name_scores[nu]
 
-            # Mirror WBIA ``sv_prune_annots``: remove annotations that
-            # were SV candidates but had too few inliers.  Annotations
-            # that were *never* SV candidates keep their pre-SV scores.
+            # Mirror WBIA ``sv_prune_annots``: only SV-verified annotations
+            # survive. Annotations that were never SV candidates are dropped
+            # (WBIA does not include them in the post-SV / final lists).
             _sv_rejected = sv_candidate_set - sv_annot_uuids
-            scored = [sm for sm in scored if sm.annot_uuid not in _sv_rejected]
+            _non_candidates = {sm.annot_uuid for sm in scored} - sv_candidate_set
+            _keep = sv_annot_uuids
+            scored = [sm for sm in scored if sm.annot_uuid in _keep]
 
             # Re-build the master match list for fm_list assembly:
             # SV-verified annotations use only inlier matches; others

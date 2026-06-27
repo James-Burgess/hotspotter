@@ -84,9 +84,7 @@ class TestIdentify:
     def test_returns_correct_shape(self):
         db = _make_synthetic_database(5, 20)
         config = IdentificationConfig(
-            hotspotter=HotSpotterConfig(
-                sv_on=False, num_return=3, flann_algorithm="exact"
-            )
+            hotspotter=HotSpotterConfig(sv_on=False, num_return=3, knn_backend="exact")
         )
         results = identify(0, db, config)
         assert len(results) <= 3
@@ -119,7 +117,7 @@ class TestIdentify:
                 knorm=2,
                 kpad=1,
                 sv_on=False,
-                flann_algorithm="exact",
+                knn_backend="exact",
             )
         )
 
@@ -136,9 +134,7 @@ class TestIdentify:
         """The query annotation should not appear in its own results."""
         db = _make_synthetic_database(3, 20)
         config = IdentificationConfig(
-            hotspotter=HotSpotterConfig(
-                sv_on=False, num_return=5, flann_algorithm="exact"
-            )
+            hotspotter=HotSpotterConfig(sv_on=False, num_return=5, knn_backend="exact")
         )
         results = identify(0, db, config)
         uuids = [r.annot_uuid for r in results]
@@ -152,7 +148,7 @@ class TestIdentify:
                 sv_on=False,
                 num_return=5,
                 can_match_samename=False,
-                flann_algorithm="exact",
+                knn_backend="exact",
             )
         )
         results = identify(0, db, config)
@@ -166,9 +162,7 @@ class TestIdentify:
         pytest.importorskip("vtool.spatial_verification")
         db = _make_synthetic_database(3, 30)
         config = IdentificationConfig(
-            hotspotter=HotSpotterConfig(
-                sv_on=True, num_return=3, flann_algorithm="exact"
-            )
+            hotspotter=HotSpotterConfig(sv_on=True, num_return=3, knn_backend="exact")
         )
         results = identify(0, db, config)
         assert len(results) > 0
@@ -177,9 +171,7 @@ class TestIdentify:
         """ScoredMatches from the pipeline should have correspondences."""
         db = _make_synthetic_database(3, 20)
         config = IdentificationConfig(
-            hotspotter=HotSpotterConfig(
-                sv_on=False, num_return=5, flann_algorithm="exact"
-            )
+            hotspotter=HotSpotterConfig(sv_on=False, num_return=5, knn_backend="exact")
         )
         results = identify(0, db, config)
         for r in results:
@@ -199,9 +191,7 @@ class TestIdentify:
         """Stress test with many annotations (marked slow)."""
         db = _make_synthetic_database(50, 15)
         config = IdentificationConfig(
-            hotspotter=HotSpotterConfig(
-                sv_on=False, num_return=10, flann_algorithm="exact"
-            )
+            hotspotter=HotSpotterConfig(sv_on=False, num_return=10, knn_backend="exact")
         )
         results = identify(0, db, config)
         assert len(results) <= 10
@@ -239,7 +229,7 @@ class TestWbiaFidelity:
                 sv_on=False,
                 num_return=5,
                 can_match_sameimg=False,
-                flann_algorithm="exact",
+                knn_backend="exact",
             )
         )
         results = identify(0, db, config)
@@ -256,7 +246,7 @@ class TestWbiaFidelity:
                 sv_on=False,
                 num_return=5,
                 can_match_sameimg=True,
-                flann_algorithm="exact",
+                knn_backend="exact",
             )
         )
         results = identify(0, db, config)

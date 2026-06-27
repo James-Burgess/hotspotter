@@ -9,12 +9,14 @@ Usage::
 
     python scripts/run_fixture.py pipeline/tests/reference_batch.json
     python scripts/run_fixture.py pipeline/tests/reference_batch.json --config '{"sv_on": true}'
+    python scripts/run_fixture.py pipeline/tests/reference_batch.json --trace-dir /tmp/traces
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -109,8 +111,8 @@ def run_identify(
     # descriptors (neighbor-dist r=0.9933 but ~80% fm-pair Jaccard). Exact L2
     # eliminates both the build variance and the topology difference, leaving
     # only WBIA's small FLANN approximation error (checks=800 is near-exact).
-    if "flann_algorithm" not in hs_kwargs:
-        hs_kwargs["flann_algorithm"] = "exact"
+    if "knn_backend" not in hs_kwargs:
+        hs_kwargs["knn_backend"] = "exact"
 
     hs_config = HotSpotterConfig(**hs_kwargs)
     id_config = IdentificationConfig(hotspotter=hs_config)
@@ -167,12 +169,36 @@ def main():
         help='JSON config overrides for HotSpotterConfig (e.g. {"sv_on": false})',
     )
     parser.add_argument("--image-dir", default=None, help="Directory containing images")
+    parser.add_argument(
+        "--trace-dir",
+        default=None,
+        help="Directory to write parquet traces (default: no tracing). "
+        "Sets HOTSPOTTER_TRACE_DIR, HOTSPOTTER_TRACE_RUN_ID, "
+        "and HOTSPOTTER_TRACE_CONFIG_LABEL.",
+    )
+    parser.add_argument(
+        "--trace-run-id",
+        default=None,
+        help="Override trace run ID (default: hotspotter-{timestamp})",
+    )
+    parser.add_argument(
+        "--trace-config-label",
+        default=None,
+        help="Override trace config label (default: from --config or 'default')",
+    )
     args = parser.parse_args()
 
     batch = load_batch(args.batch_path)
     image_dir = args.image_dir or str(
         Path(args.batch_path).parent / "assets" / "images"
     )
+
+    if args.trace_dir:
+        os.environ["HOTSPOTTER_TRACE_DIR"] = str(args.trace_dir)
+    if args.trace_run_id:
+        os.environ["HOTSPOTTER_TRACE_RUN_ID"] = args.trace_run_id
+    if args.trace_config_label:
+        os.environ["HOTSPOTTER_TRACE_CONFIG_LABEL"] = args.trace_config_label
 
     database, query_indices, annot_filenames = build_database(batch, image_dir)
 

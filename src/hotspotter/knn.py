@@ -67,8 +67,14 @@ def build_global_index(
     algorithm: str = "kdtree",
     trees: int = 4,
     random_seed: int = 42,
+    backend: str = "pyflann",
 ) -> tuple[FLANNIndex, np.ndarray, np.ndarray]:
-    """Build a single FLANN index over all descriptors from *feature_sets*.
+    """Build a single index over all descriptors from *feature_sets*.
+
+    Args:
+        backend: ``"pyflann"`` or ``"faiss"``.  When ``"faiss"``, all
+            FLANN-specific keyword arguments are ignored and an exact
+            ``IndexFlatL2`` is built instead.
 
     Returns:
         ``(index, annot_indices, feat_indices)`` where:
@@ -91,7 +97,14 @@ def build_global_index(
 
     all_descriptors = np.concatenate(chunks, axis=0)
 
-    if _HAS_PYFLANN:
+    if backend == "faiss":
+        if not _HAS_FAISS:
+            raise ImportError("faiss backend requested but faiss-cpu is not installed")
+        index = _faiss.IndexFlatL2(all_descriptors.shape[1])
+        index.add(all_descriptors)
+    else:
+        if not _HAS_PYFLANN:
+            raise ImportError("pyflann backend requested but pyflann is not installed")
         index = _PyFlann()
         index.build_index(
             all_descriptors,
@@ -99,11 +112,6 @@ def build_global_index(
             trees=trees,
             random_seed=random_seed,
         )
-    elif _HAS_FAISS:
-        index = _faiss.IndexFlatL2(all_descriptors.shape[1])
-        index.add(all_descriptors)
-    else:
-        raise ImportError("No k‑NN backend available — install pyflann or faiss-cpu")
 
     return index, annot_indices, feat_indices
 
@@ -114,6 +122,7 @@ def query_index(
     k: int,
     checks: int = 1028,
     cores: int = 0,
+    backend: str = "pyflann",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Search *index* for the *k* nearest neighbours of each query descriptor.
 
@@ -121,20 +130,19 @@ def query_index(
         index: index from :func:`build_index` or :func:`build_global_index`.
         query_features: shape [M, D] uint8.
         k: number of neighbours to return.
-        checks: FLANN checks parameter (only used with pyflann).
-        cores: FLANN cores parameter, 0 = all (only used with pyflann).
+        checks: FLANN checks parameter (pyflann backend only).
+        cores: FLANN cores parameter (pyflann backend only).
+        backend: ``"pyflann"`` or ``"faiss"``.
 
     Returns:
         ``(distances [M, k] float32, labels [M, k] int32)``.
     """
     q = query_features.descriptors.astype(np.float32, copy=False)
-    if _HAS_PYFLANN:
-        indices, distances = index.nn_index(q, k, checks=checks, cores=cores)
-        return distances.astype(np.float32, copy=False), indices
-    elif _HAS_FAISS:
+    if backend == "faiss":
         return index.search(q, k)
     else:
-        raise ImportError("No k-NN backend available")
+        indices, distances = index.nn_index(q, k, checks=checks, cores=cores)
+        return distances.astype(np.float32, copy=False), indices
 
 
 def exact_knn(

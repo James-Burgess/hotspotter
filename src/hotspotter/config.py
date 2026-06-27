@@ -83,6 +83,12 @@ class HotSpotterConfig(BaseModel):
         description="Minimum foreground weight for feature filtering before FLANN query.",
     )
     sv_on: bool = Field(default=True, description="Enable spatial verification")
+    sv_verify_all: bool = Field(
+        default=True,
+        description="Verify all scored annotations (bypasses shortlist). "
+        "Matches WBIA which sends every candidate through SV. "
+        "When False, uses sv_n_name_shortlist + sv_n_annot_per_name cap.",
+    )
     sv_n_name_shortlist: int = Field(default=40, ge=1)
     sv_n_annot_per_name: int = Field(
         default=999,
@@ -127,11 +133,30 @@ class HotSpotterConfig(BaseModel):
     bar_l2_on: bool = Field(default=False)
     const_on: bool = Field(default=False)
 
+    knn_backend: Literal["exact", "flann", "faiss"] = Field(
+        default="exact",
+        description=(
+            "KNN backend: 'exact' (numpy L2, deterministic), "
+            "'flann' (pyflann kdtree, approximate), "
+            "'faiss' (faiss IndexFlatL2, deterministic). "
+        ),
+    )
     flann_algorithm: str = Field(default="kdtree")
-    flann_trees: int = Field(default=8)
-    flann_random_seed: int = Field(default=42)
-    flann_checks: int = Field(default=800)
-    flann_cores: int = Field(default=0)
+    flann_trees: int = Field(
+        default=4,
+        description="Number of kd-trees (WBIA default: 4).",
+    )
+    flann_random_seed: int = Field(
+        default=-1,
+        description="Random seed for FLANN index building (WBIA default: -1 = random).",
+    )
+    flann_checks: int = Field(
+        default=32,
+        description="FLANN search thoroughness (WBIA default: 32).",
+    )
+    flann_cores: int = Field(
+        default=1, description="FLANN thread count (WBIA default: 1)."
+    )
 
 
 class MiewIdConfig(BaseModel):
