@@ -200,6 +200,19 @@ def main():
     if args.trace_config_label:
         os.environ["HOTSPOTTER_TRACE_CONFIG_LABEL"] = args.trace_config_label
 
+    _trace_enabled = False
+    try:
+        from hotspotter.trace import _is_trace_enabled, _trace_dir, _trace_run_id
+
+        _trace_enabled = _is_trace_enabled()
+        print(
+            f"[trace] dir={os.environ.get('HOTSPOTTER_TRACE_DIR')!r} "
+            f"run_id={_trace_run_id()!r} enabled={_trace_enabled}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[trace] import check failed: {exc}", flush=True)
+
     database, query_indices, annot_filenames = build_database(batch, image_dir)
 
     config = json.loads(args.config) if args.config else None

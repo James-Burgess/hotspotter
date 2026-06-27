@@ -42,7 +42,11 @@ def _load_arr(row, col, run_dir):
     parsed = json.loads(val) if isinstance(val, str) else val
     if isinstance(parsed, dict) and "npy_path" in parsed:
         npy = parsed["npy_path"]
-        full = Path(npy) if os.path.isabs(npy) else run_dir / "final_scores" / npy
+        # All paths in parquet cells are absolute as written by the trace
+        # writer's container.  Use only the filename and reconstruct the
+        # path relative to *run_dir* (the evaluator's mount may differ).
+        fname = Path(npy).name
+        full = run_dir / "final_scores" / "arrays" / fname
         return np.load(str(full))
     if isinstance(parsed, dict) and "values" in parsed:
         return np.array(parsed["values"])

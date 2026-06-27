@@ -89,6 +89,13 @@ def identify(
             trace_query_index if trace_query_index is not None else query_annot_index
         )
     )
+    if ctx is not None:
+        print(
+            f"[pipeline] trace_context created: run_id={ctx._run_id!r} "
+            f"base={ctx._base!r} config_label={ctx._config_label!r} "
+            f"query_index={ctx._query_index!r}",
+            flush=True,
+        )
 
     if ctx is not None:
         ctx.trace_annotations(database, query_annot_index)
