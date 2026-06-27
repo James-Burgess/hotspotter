@@ -1,34 +1,31 @@
-# wbia-core
-
-> Transition note: `wbia-core` is the prototype name. The target package is `hotspotter`, a reusable HotSpotter algorithm library. The current Flask sidecar is transitional and should move into `wildlife-id` as the production identification/index service. See `docs/development/hotspotter-transition.md`.
+# Hotspotter
 
 Stateless HotSpotter wildlife re-identification pipeline — extracted from `wildbook-ia`, distributed as a pure-Python pip package.
 
 ## What it does
 
-`wbia-core` currently provides an end-to-end HotSpotter prototype for spot-pattern animal identification. The long-term `hotspotter` package should expose reusable algorithm primitives: chip helpers, Hessian-affine/SIFT feature extraction, LNBNN/name scoring, and spatial verification helpers. Persistent indexes, service APIs, candidate filtering, and production matching orchestration belong in `wildlife-id`.
+`The `hotspotter` package exposes reusable algorithm primitives: 
 
-```python
-from wbia_core import identify, IdentificationConfig, HotSpotterConfig
+chip helpers, 
+Hessian-affine/SIFT feature extraction, 
+LNBNN/name scoring, 
+and spatial verification helpers. 
 
-config = IdentificationConfig(
-    hotspotter=HotSpotterConfig(knn=4, sv_on=False)
-)
-results = identify(query_index=0, database=annotated_images, config=config)
-# → list[ScoredMatch] sorted by score descending
-```
+> Persistent indexes, service APIs, candidate filtering, and production matching orchestration belong in `wildlife-id`.
+
+
 
 ## What it replaces
 
-| `wildbook-ia` | `wbia-core` |
+| `wildbook-ia` | `hotspotter` |
 |---|---|
-| `wbia.algo.hots.chip_match` (3039 lines) | `wbia_core.data` (dataclasses) |
-| `wbia.algo.hots.pipeline` (1655 lines) | `wbia_core.pipeline.identify` (one function) |
+| `wbia.algo.hots.chip_match` (3039 lines) | `hotspotter.data` (dataclasses) |
+| `wbia.algo.hots.pipeline` (1655 lines) | `hotspotter.pipeline.identify` (one function) |
 | `wbia.algo.hots.nn_weights` (669 lines) | Inlined filter chain in `pipeline.py` |
-| `wbia.algo.hots.name_scoring` (404 lines) | `wbia_core.name_scoring` |
-| `wbia.algo.hots.scoring` (177 lines) | `wbia_core.scoring` |
-| `wbia.algo.hots.neighbor_index` (1118 lines) | `wbia_core.knn` |
-| `wbia.algo/Config.py` (nested config) | `wbia_core.config` (Pydantic v2) |
+| `wbia.algo.hots.name_scoring` (404 lines) | `hotspotter.name_scoring` |
+| `wbia.algo.hots.scoring` (177 lines) | `hotspotter.scoring` |
+| `wbia.algo.hots.neighbor_index` (1118 lines) | `hotspotter.knn` |
+| `wbia.algo/Config.py` (nested config) | `hotspotter.config` (Pydantic v2) |
 
 What it does **not** replace: detection (YOLO/MegaDetector), classification, embedding extraction, the `IBEISController`, the depcache, the ZMQ job engine, or the `wbia_*` PostgreSQL schemas. Those belong to `ml-service` and `wildlife-id`.
 
@@ -54,7 +51,7 @@ wbia-core/
 ├── scripts/entrypoints/
 │   ├── server-entrypoint.sh           # gunicorn entrypoint
 │   └── test-entrypoint.sh             # parity test entrypoint
-├── src/wbia_core/
+├── src/hotspotter/
 │   ├── pipeline.py                    # identify() — full LNBNN + filters + SV
 │   ├── scoring.py                     # per_feature_fg, score_matches
 │   ├── name_scoring.py                # compute_fmech_score, align_name_scores_with_annots
@@ -87,32 +84,6 @@ Three WildMe packages are vendored as git submodules for source compilation:
 
 They must be compiled from source against the target system's OpenCV. The Dockerfile handles this in dependency order: `wbia-utool → wbia-vtool → wbia-tpl-pyhesaff → wbia-core`.
 
-```bash
-git clone --recursive git@github.com:WildMeOrg/wildbook-infra.git
-```
-
-## Build & run
-
-```bash
-cd wbia-core
-docker build -t wbia-core:latest .       # ~3 min
-
-# Server
-make server
-curl http://localhost:5000/api/health/
-
-# Identify
-curl -X POST http://localhost:5000/api/v1/identify/ \
-  -H "Content-Type: application/json" -d @request.json
-
-# Unit tests
-make test-unit                           # 38 tests, <3s
-
-# Benchmark (from host)
-python3 tests/benchmark/run_benchmark.py \
-  --targets wbia-core wbia-develop \
-  --n-annots 15 --n-queries 2 --seed 10
-```
 
 ## Configuration
 
@@ -161,15 +132,10 @@ Run the full identification pipeline for one query against a database of annotat
 | `spatial_verify(matches, query_kp, db)` | `pipeline.spatial_verification` |
 | `make_sver_shortlist(scored, n, m)` | `scoring.make_chipmatch_shortlists` |
 
-## Parity status
 
-Algorithmically equivalent to WBIA HotSpotter's `vsmany` pipeline as of
-2026-06-08d. Two benchmark bugs in the wbia-develop target runner
-(`targets/wbia.py`) were discovered and fixed: reading the wrong
-score field and missing annotation name assignment. After fixes,
-top-1 agrees on 11/12 queries and scores match within 1%.
 
 See `docs/development/`:
+- `deepseek-wbia-parity.md` - current notes about the work of achiving parity.
 - `hotspotter-transition.md` — current boundary checklist for the `hotspotter` rename and `wildlife-id` split
 - `parity-analysis.md` — investigation history + benchmark artifact analysis
 - `parity-roadmap.md` — implementation plan with verification results

@@ -143,7 +143,7 @@ def stage_filter_counts(
     k: int,
     kpad: int,
     query_idx: int,
-    same_name_set: set,
+    impossible_set: set,
 ) -> None:
     if not _enabled():
         return
@@ -155,14 +155,14 @@ def stage_filter_counts(
         voting_annot_all[valid, j] = annot_of_desc[col[valid]]
 
     invalid = (voting_annot_all == query_idx) | np.isin(
-        voting_annot_all, list(same_name_set)
+        voting_annot_all, list(impossible_set)
     )
     _log("")
     _log("  {}".format(THIN))
-    _log("  Self/Same-Name Filter")
+    _log("  Self/Same-Name/Same-Image Filter")
     _log("  {}".format(THIN))
     _log("  query_idx         {}".format(query_idx))
-    _log("  same_name_set     {} annotations".format(len(same_name_set)))
+    _log("  impossible_set    {} annotations".format(len(impossible_set)))
     total_entries = n_qfxs * (k + kpad)
     filtered = int(invalid.sum())
     _log(

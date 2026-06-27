@@ -55,10 +55,10 @@ class AnnotatedImage:
 
     annot_uuid: uuid.UUID
     name_uuid: uuid.UUID | None
-    image_uuid: uuid.UUID | None = None
     image: np.ndarray  # [H, W] or [H, W, 3] uint8
     features: FeatureSet
     bbox: tuple[int, int, int, int]  # (x, y, w, h)
+    image_uuid: uuid.UUID | None = None
 
 
 @dataclass
