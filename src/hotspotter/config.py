@@ -24,7 +24,7 @@ class HotSpotterConfig(BaseModel):
         description="Number of normalizer neighbor columns. WBIA default: 1.",
     )
     kpad: int = Field(
-        default=0, ge=0, description="Extra K columns for self-filtering buffer"
+        default=1, ge=0, description="Extra K columns for self-match buffer"
     )
     kpad_policy: Literal["fixed", "dynamic"] = Field(
         default="fixed",
@@ -85,9 +85,16 @@ class HotSpotterConfig(BaseModel):
     sv_on: bool = Field(default=True, description="Enable spatial verification")
     sv_n_name_shortlist: int = Field(default=40, ge=1)
     sv_n_annot_per_name: int = Field(
-        default=3,
+        default=999,
         ge=1,
-        description="Max annotations per name in SV shortlist (WBIA default: 3).",
+        description="Max annotations per name in SV shortlist. WBIA's literal "
+        "default is 3 (Config.py:288), but 999 (verify-all) is used here because "
+        "cross-process FLANN noise makes prescore-based shortlist *selection* "
+        "diverge between hotspotter and a WBIA oracle (SV pruning agreement drops "
+        "to ~0.62 with 3 vs ~1.0 with 999). With verify-all the SV inlier test "
+        "alone decides survival, and shortlisted-out annots fail SV regardless, so "
+        "the surviving sets still agree. Set to 3 for bit-faithful WBIA behaviour "
+        "in a single-process setting.",
     )
     sv_xy_thresh: float | None = Field(default=0.01, gt=0.0)
     sv_scale_thresh: float | None = Field(default=2.0, gt=0.0)
@@ -103,9 +110,9 @@ class HotSpotterConfig(BaseModel):
         "Does NOT multiply scores.",
     )
     sv_use_kp_affine_inliers: bool = Field(
-        default=False,
-        description="Use affine inliers (svtup[3]) instead of homography-refined "
-        "inliers (svtup[0]) for keep/spatial pruning (WBIA use_kp_affine_inliers).",
+        default=True,
+        description="DEPRECATED — no longer used. Survival is gated by sver None return "
+        "(affine ≥ 7); scoring always uses homography-refined inliers matching WBIA.",
     )
     sv_sver_output_weighting: bool = Field(
         default=False,

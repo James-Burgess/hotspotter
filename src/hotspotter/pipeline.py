@@ -33,22 +33,26 @@ def _compute_kpad(hs, query_annot_index: int, database: list[AnnotatedImage]) ->
     """Compute Kpad based on policy.
 
     'fixed' — use hs.kpad value directly.
-    'dynamic' — count impossible (same-name) annotations that WBIA's
-      ``build_impossible_daids_list`` would mask.  The query is
-      excluded from the FLANN index (matching WBIA), so there is
-      no self-match column to strip.
+    'dynamic' — count impossible (same-name and/or same-image) annotations
+      that WBIA's ``build_impossible_daids_list`` would mask, mirroring
+      ``Kpad_list = list(map(len, impossible_daids_list))``.  The query is
+      excluded from the FLANN index (matching WBIA), so there is no
+      self-match column to strip.
     """
     if hs.kpad_policy == "fixed":
         return hs.kpad
 
-    kpad = 0
-    if not hs.can_match_samename:
-        qname = database[query_annot_index].name_uuid
-        if qname is not None:
-            for i, a in enumerate(database):
-                if i != query_annot_index and a.name_uuid == qname:
-                    kpad += 1
-    return kpad
+    qann = database[query_annot_index]
+    impossible: set[int] = set()
+    if not hs.can_match_samename and qann.name_uuid is not None:
+        for i, a in enumerate(database):
+            if i != query_annot_index and a.name_uuid == qann.name_uuid:
+                impossible.add(i)
+    if not hs.can_match_sameimg and qann.image_uuid is not None:
+        for i, a in enumerate(database):
+            if i != query_annot_index and a.image_uuid == qann.image_uuid:
+                impossible.add(i)
+    return len(impossible)
 
 
 def identify(
@@ -124,13 +128,15 @@ def identify(
             len(query_features) > 0
         ), "All query features filtered out by minscale/maxscale/fgw_thresh"
 
-    # ---- 1. Build global FLANN index over db annotations (query excluded) ----
+    # ---- 1. Build global FLANN index over ALL annotations (query included) ----
+    # WBIA includes the query (Kpad=1) so the kd-tree topology matches across
+    # processes. Different point-sets produce different near-tie resolution in
+    # FLANN's kd-tree search, which cascades into fm-list divergence (80%→??).
     db_feature_sets: list[FeatureSet] = []
     db_to_original: list[int] = []
     for i, ann in enumerate(database):
-        if i != query_annot_index:
-            db_feature_sets.append(ann.features)
-            db_to_original.append(i)
+        db_feature_sets.append(ann.features)
+        db_to_original.append(i)
     db_remap = np.array(db_to_original, dtype=np.int32)
 
     if hs.flann_algorithm == "exact":
@@ -189,12 +195,12 @@ def identify(
 
     n_qfxs = dists.shape[0]
 
-    voting_dists_all = dists[:, :k]  # [M, K]
-    norm_dists = dists[:, k:]  # [M, Knorm]
+    voting_dists_all = dists[:, : k + kpad]  # [M, K+Kpad]
+    norm_dists = dists[:, k + kpad :]  # [M, Knorm]
 
-    voting_annot_all = np.full((n_qfxs, k), -1, dtype=np.int32)
-    voting_feat_all = np.full((n_qfxs, k), -1, dtype=np.int32)
-    for j in range(k):
+    voting_annot_all = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
+    voting_feat_all = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
+    for j in range(k + kpad):
         col = labels[:, j]
         valid = (col >= 0) & (col < n_total)
         voting_annot_all[valid, j] = annot_of_desc[col[valid]]
@@ -202,8 +208,13 @@ def identify(
 
     dlog.stage_voting_cols(dists, labels, annot_of_desc, k, kpad, query_annot_index)
 
-    # ---- 3. Baseline-neighbour filter (self + same-name) ----
-    qname = database[query_annot_index].name_uuid
+    # ---- 3. Baseline-neighbour filter (self + same-name + same-image) ----
+    # Mirrors WBIA's ``build_impossible_daids_list``: the query is removed
+    # from the index (self handled), and same-name / same-image ("contact")
+    # annotations are filtered from the voting columns when their respective
+    # ``can_match_*`` flag is False.
+    qann = database[query_annot_index]
+    qname = qann.name_uuid
     if hs.can_match_samename or qname is None:
         same_name_set: set[int] = set()
     else:
@@ -213,12 +224,24 @@ def identify(
             if i != query_annot_index and a.name_uuid == qname
         }
 
+    qimg = qann.image_uuid
+    if hs.can_match_sameimg or qimg is None:
+        same_image_set: set[int] = set()
+    else:
+        same_image_set = {
+            i
+            for i, a in enumerate(database)
+            if i != query_annot_index and a.image_uuid == qimg
+        }
+
+    impossible_set = same_name_set | same_image_set
+
     invalid = (voting_annot_all == query_annot_index) | np.isin(
-        voting_annot_all, list(same_name_set)
+        voting_annot_all, list(impossible_set)
     )  # [M, K], bool
 
     dlog.stage_filter_counts(
-        dists, labels, annot_of_desc, k, kpad, query_annot_index, same_name_set
+        dists, labels, annot_of_desc, k, kpad, query_annot_index, impossible_set
     )
 
     if ctx is not None:
@@ -238,7 +261,7 @@ def identify(
         voting_ok = voting_annot_all >= 0
         voting_names[voting_ok] = db_names[voting_annot_all[voting_ok]]
         normalizer_valid = np.ones(n_qfxs, dtype=bool)
-        for j in range(k):
+        for j in range(1, k + kpad):  # skip col 0 = self-match
             conflict = np.zeros(n_qfxs, dtype=bool)
             vn = voting_names[:, j]
             has_name = (norm_names != None) & (vn != None)  # noqa: E711
@@ -265,7 +288,7 @@ def identify(
     for qfx in range(n_qfxs):
         if normalizer_valid is not None and not normalizer_valid[qfx]:
             continue
-        for j in range(k):
+        for j in range(1, k + kpad):  # skip col 0 = self-match
             vdist = float(
                 norm_dists[qfx, 0] if hs.normonly_on else voting_dists_all[qfx, j]
             )
@@ -415,6 +438,7 @@ def identify(
             _prescored,
             n_names=hs.sv_n_name_shortlist,
             n_annots_per_name=hs.sv_n_annot_per_name,
+            score_method=hs.score_method,
         )
         dist_lookup: dict[tuple[int, int, int], float] = {}
         for m in matches:
@@ -430,7 +454,6 @@ def identify(
             use_chip_extent=hs.sv_use_chip_extent,
             weight_inliers=hs.sv_weight_inliers,
             sver_output_weighting=hs.sv_sver_output_weighting,
-            use_kp_affine_inliers=hs.sv_use_kp_affine_inliers,
             dist_lookup=dist_lookup,
         )
 
@@ -588,8 +611,15 @@ def identify(
 
     dlog.stage_final(scored)
 
+    # WBIA ranks results by the canonical name score (``cm.score_list``),
+    # set via ``set_cannonical_name_score`` → ``align_name_scores_with_annots``
+    # (best annotation per name carries the name score; same-name runners-up
+    # get ``-inf`` and sink). ``ScoredMatch.score`` holds that canonical value,
+    # so sorting by it reproduces ``get_top_aids``/``get_top_nids`` which
+    # argsort ``cm.score_list`` descending. csum is used only as a stable
+    # tiebreak among the ``-inf`` non-canonical annotations.
     scored.sort(
-        key=lambda sm: csum_annot.get(sm.annot_uuid, 0.0),
+        key=lambda sm: (sm.score, csum_annot.get(sm.annot_uuid, 0.0)),
         reverse=True,
     )
 

@@ -35,7 +35,6 @@ def spatial_verify(
     use_chip_extent: bool = True,
     weight_inliers: bool = True,
     sver_output_weighting: bool = False,
-    use_kp_affine_inliers: bool = True,
     dist_lookup: dict[tuple[int, int, int], float] | None = None,
 ) -> tuple[
     list[ScoredMatch],
@@ -47,10 +46,12 @@ def spatial_verify(
     homography is computed from the per-feature correspondences stored
     in ``ScoredMatch.correspondences`` as ``(qfx, dfx)`` pairs.
 
-    Unlike the old boost-based approach, this function does NOT modify
-    ``ScoredMatch.score``.  Instead it returns per-inlier homography-
-    error weights so the caller can filter matches to inliers, apply
-    the weights as a new fsv column, and re-run the scoring chain.
+    Survival is gated solely by ``spatially_verify_kpts`` returning
+    ``None`` (affine inliers < 7 for homography refinement, matching
+    WBIA pipeline.py:1567).  There is no downstream inlier-count check.
+    The fm-list passed to scoring is always filtered to
+    homography-refined inliers (``svtup[0]``), matching WBIA
+    pipeline.py:1568.
 
     Args:
         matches: scored candidates (shortlist).
@@ -146,21 +147,20 @@ def spatial_verify(
             continue
 
         refined_inliers, refined_errors, H, aff_inliers, aff_errors, Aff = svtup
-        if use_kp_affine_inliers and aff_inliers is not None:
-            sv_inliers = aff_inliers
-        else:
-            sv_inliers = refined_inliers
 
-        inliers = int(len(sv_inliers))
-        if inliers < min_inliers:
-            continue
+        # WBIA always scores on homography-refined inliers (pipeline.py:1568).
+        # The survival gate is enforced by sver's None return (affine < 7),
+        # so no secondary length check is needed.
+        sv_inliers = refined_inliers
 
-        sm.sv_inliers = inliers
+        sm.sv_inliers = int(len(sv_inliers))
         sm.sv_homography = H
 
         inlier_fm = fm[sv_inliers]
         inlier_qfxs = inlier_fm[:, 0].tolist()
         inlier_dfxs = inlier_fm[:, 1].tolist()
+
+        inliers = int(len(sv_inliers))
 
         if (
             sver_output_weighting
@@ -207,17 +207,32 @@ def make_sver_shortlist(
     scored: list[ScoredMatch],
     n_names: int = 40,
     n_annots_per_name: int = 3,
+    score_method: str = "nsum",
 ) -> list[ScoredMatch]:
     """Select a shortlist of candidates for spatial verification.
 
-    Matches WBIA's ``make_chipmatch_shortlists``:
-    1. Group candidates by ``name_uuid``.
-    2. Sort names by their best annotation score descending.
-    3. Keep top *n_names*.
-    4. Within each name, keep top *n_annots_per_name*.
+    Matches WBIA's ``make_chipmatch_shortlists`` → ``get_name_shortlist_aids``:
+
+    * ``nsum`` (default): group by name, rank **names** by their name score
+      (the canonical annotation's ``score``) and take the top *n_names*;
+      within each name rank annotations by their **annot score (csum)** and
+      take the top *n_annots_per_name* (``scoring.py:107-109``).
+    * ``csum``: flat top-``n_names * n_annots_per_name`` annotations ranked
+      by annot score (csum), matching ``get_annot_shortlist_aids``.
+
+    Annotations with ``name_uuid is None`` are always carried as candidates
+    when the flat path is taken; under the name path they are skipped
+    (WBIA groups by nid, unnamed annots form negative-nid singleton groups).
     """
     if not scored:
         return []
+
+    is_name_path = score_method in {"nsum", "nsum_wbia"}
+
+    if not is_name_path:
+        # Flat annot shortlist ranked by csum (WBIA get_annot_shortlist_aids).
+        flat = sorted(scored, key=lambda s: s.annot_csum, reverse=True)
+        return flat[: n_names * n_annots_per_name]
 
     name_best: dict[uuid.UUID, float] = {}
     name_annots: dict[uuid.UUID, list[ScoredMatch]] = {}
@@ -226,6 +241,8 @@ def make_sver_shortlist(
         if nid is None:
             continue
         name_annots.setdefault(nid, []).append(sm)
+        # Names are ranked by name score; the canonical annotation carries
+        # it as ``sm.score`` (max over the name == the name's fmech score).
         cur = name_best.get(nid, float("-inf"))
         if sm.score > cur:
             name_best[nid] = sm.score
@@ -234,7 +251,8 @@ def make_sver_shortlist(
 
     shortlist: list[ScoredMatch] = []
     for nid in sorted_names[:n_names]:
-        annots = sorted(name_annots[nid], key=lambda s: s.score, reverse=True)
+        # Within a name, rank by the annotation score (csum), not canonical.
+        annots = sorted(name_annots[nid], key=lambda s: s.annot_csum, reverse=True)
         shortlist.extend(annots[:n_annots_per_name])
 
     return shortlist

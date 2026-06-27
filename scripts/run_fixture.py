@@ -63,10 +63,14 @@ def build_database(
         bbox = ann["bbox"]
         chip = extract_chip(img, bbox)
         features = extract_features(chip, SiftConfig())
-        individual_ids = ann.get("individual_ids", [])
-        nid = str(individual_ids[0]) if individual_ids else f"name_{ann['annot_id']}"
+        # WBIA uses -daid sentinel names (each annot scored independently).
+        nid = f"-{ann['annot_id']}"
         if nid not in name_to_uuid:
             name_to_uuid[nid] = uuid.uuid5(uuid.NAMESPACE_DNS, nid)
+        # Annotations sharing a source image are "contact" aids in WBIA;
+        # group by image_id when available, else by file_name.
+        image_key = str(ann.get("image_id", ann["file_name"]))
+        image_uid = uuid.uuid5(uuid.NAMESPACE_DNS, image_key)
         if ann.get("is_query") or ann.get("query"):
             query_indices.append(len(database))
         database.append(
@@ -76,6 +80,7 @@ def build_database(
                 image=chip,
                 features=features,
                 bbox=tuple(bbox),
+                image_uuid=image_uid,
             )
         )
         annot_filenames.append(ann["file_name"])
@@ -97,6 +102,15 @@ def run_identify(
 
     if "fg_on" not in hs_kwargs:
         hs_kwargs["fg_on"] = False
+    # Brute-force L2 KNN for deterministic parity comparison. FLANN's kdtree
+    # build is non-deterministic across processes (and hotspotter excludes the
+    # query from the index, changing the tree topology vs WBIA's N-point index),
+    # which produces different (qfx,dfx) feature-match pairs despite identical
+    # descriptors (neighbor-dist r=0.9933 but ~80% fm-pair Jaccard). Exact L2
+    # eliminates both the build variance and the topology difference, leaving
+    # only WBIA's small FLANN approximation error (checks=800 is near-exact).
+    if "flann_algorithm" not in hs_kwargs:
+        hs_kwargs["flann_algorithm"] = "exact"
 
     hs_config = HotSpotterConfig(**hs_kwargs)
     id_config = IdentificationConfig(hotspotter=hs_config)
