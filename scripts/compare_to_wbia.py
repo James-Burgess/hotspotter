@@ -89,8 +89,20 @@ def run_traces(
     image_dir: Path,
     batch_path: Path,
     config_names: list[str],
+    knn_backend: str = "flann",
+    flann_trees: int = 8,
+    flann_seed: int = 42,
+    flann_checks: int = 32,
 ) -> None:
-    """Run hotspotter via Docker for each config, writing parquet traces."""
+    """Run hotspotter via Docker for each config, writing parquet traces.
+
+    FLANN params (``flann_trees``, ``flann_seed``, ``flann_checks``) are pinned
+    to WBIA nightly's observed defaults (trees=8, random_seed=42, checks=32) so
+    HS and WBIA build identical kd-tree forests. HS's library defaults were
+    trees=4/seed=-1, which drifted from WBIA and inflated neighbor divergence.
+    ``knn_backend`` selects the KNN implementation; "flann" is the canonical
+    parity backend (WBIA runs FLANN).
+    """
     repo_root = _find_repo_root()
     mount_image = f"{image_dir.resolve()}:/app/pipeline/tests/assets/images"
     mount_batch = f"{batch_path.resolve()}:/app/pipeline/tests/reference_batch.json"
@@ -102,6 +114,10 @@ def run_traces(
         cfg.setdefault("fg_on", False)
         cfg.setdefault("kpad_policy", "dynamic")
         cfg.setdefault("knorm", 1)
+        cfg.setdefault("knn_backend", knn_backend)
+        cfg.setdefault("flann_trees", flann_trees)
+        cfg.setdefault("flann_random_seed", flann_seed)
+        cfg.setdefault("flann_checks", flann_checks)
         cfg_json = json.dumps(cfg)
 
         print(f"[{idx + 1}/{total}] {cfg_name:20s}  {cfg_json}", flush=True)
@@ -154,8 +170,8 @@ def run_traces(
 
 def compare(
     oracle_dir: Path, trace_dir: Path, passing_rho: float, out: Path | None
-) -> int:
-    """Run the comparison script and print the terminal output."""
+) -> tuple[int, str]:
+    """Run the comparison script; return (exit_code, output_text)."""
     compare_script = _find_compare_script()
 
     cmd = [
@@ -171,11 +187,25 @@ def compare(
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
-    print(result.stdout)
+    text = result.stdout or ""
+    print(text)
     if result.stderr:
         print(result.stderr, file=sys.stderr)
 
-    return result.returncode
+    return result.returncode, text
+
+
+def _parse_rho(text: str) -> float | None:
+    """Extract the mean final name score Spearman rho from comparer output."""
+    import re
+
+    m = re.search(r"Parity check:.*?name score Spearman[^\d-]*(-?\d+\.?\d*)", text)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
+    return None
 
 
 def main() -> int:
@@ -207,6 +237,31 @@ def main() -> int:
         "--trace-dir",
         help="Custom trace output directory (default: temp dir under /tmp)",
     )
+    parser.add_argument(
+        "--backends",
+        nargs="+",
+        default=["flann", "exact"],
+        help="KNN backends to run and compare (default: flann exact). 'flann' "
+        "is the canonical parity gate (WBIA runs FLANN); 'exact' is the "
+        "deterministic production backend, reported for divergence info.",
+    )
+    parser.add_argument(
+        "--trees",
+        type=int,
+        default=8,
+        help="FLANN kd-trees (default 8, matching WBIA nightly's flann_cfg "
+        "default; HS's library default is 4).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="FLANN random seed (default 42, WBIA IndexerConfig default; HS's "
+        "library default -1 drifted from this).",
+    )
+    parser.add_argument(
+        "--checks", type=int, default=32, help="FLANN checks (default 32)."
+    )
     args = parser.parse_args()
 
     oracle_dir = Path(args.oracle_dir)
@@ -225,12 +280,64 @@ def main() -> int:
 
     trace_dir.mkdir(parents=True, exist_ok=True)
 
-    if not args.skip_run:
-        run_traces(trace_dir, image_dir, batch_path, args.configs)
+    print(
+        f"FLANN params: trees={args.trees} seed={args.seed} checks={args.checks} "
+        f"(pinned on both WBIA oracle and HS runs)",
+        flush=True,
+    )
 
-    print(f"\nComparing {oracle_dir.name} vs {trace_dir.name} ...\n", flush=True)
+    summary: list[tuple[str, float | None, bool]] = []
+    gate_exit = 0
 
-    return compare(oracle_dir, trace_dir, args.passing_rho, args.out)
+    for backend in args.backends:
+        backend_trace_dir = trace_dir / backend
+        backend_trace_dir.mkdir(parents=True, exist_ok=True)
+
+        if not args.skip_run:
+            print(f"\n========== backend={backend} ==========", flush=True)
+            run_traces(
+                backend_trace_dir,
+                image_dir,
+                batch_path,
+                args.configs,
+                knn_backend=backend,
+                flann_trees=args.trees,
+                flann_seed=args.seed,
+                flann_checks=args.checks,
+            )
+
+        print(
+            f"\n===== {backend}: comparing {oracle_dir.name} vs "
+            f"{backend_trace_dir.name} =====\n",
+            flush=True,
+        )
+        if args.out:
+            out_path = Path(args.out)
+            out_html = out_path.with_name(f"{out_path.stem}-{backend}{out_path.suffix}")
+        else:
+            out_html = None
+        code, text = compare(oracle_dir, backend_trace_dir, args.passing_rho, out_html)
+        rho = _parse_rho(text)
+        passed = rho is not None and rho >= args.passing_rho
+        summary.append((backend, rho, passed))
+
+        # The parity gate is defined for flann-vs-flann; honor its exit code.
+        if backend == "flann":
+            gate_exit = code
+
+    print("\n========== PARITY SUMMARY ==========", flush=True)
+    print(
+        f"FLANN params: trees={args.trees} seed={args.seed} checks={args.checks} "
+        f"(gate rho >= {args.passing_rho})",
+        flush=True,
+    )
+    for backend, rho, passed in summary:
+        rho_str = f"{rho:.4f}" if rho is not None else "n/a"
+        tag = " (gate)" if backend == "flann" else " (info)"
+        verdict = "PASS" if passed else "FAIL"
+        print(f"  {backend:8s} rho={rho_str:<8} {verdict}{tag}")
+
+    return gate_exit
 
 
 if __name__ == "__main__":

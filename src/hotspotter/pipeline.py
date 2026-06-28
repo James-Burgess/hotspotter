@@ -55,6 +55,115 @@ def _compute_kpad(hs, query_annot_index: int, database: list[AnnotatedImage]) ->
     return len(impossible)
 
 
+def _trace_ids(database, query_annot_index):
+    uuid_to_daid = {ann.annot_uuid: i + 1 for i, ann in enumerate(database)}
+    name_to_nid: dict = {}
+    next_nid = 1
+    for ann in database:
+        if ann.name_uuid is not None and ann.name_uuid not in name_to_nid:
+            name_to_nid[ann.name_uuid] = next_nid
+            next_nid += 1
+    qaid = query_annot_index + 1
+    qann = database[query_annot_index]
+    qnid = name_to_nid.get(qann.name_uuid, -1) if qann.name_uuid else -1
+    return uuid_to_daid, name_to_nid, qaid, qnid
+
+
+def _emit_chipmatches(
+    ctx,
+    stage,
+    scored,
+    fm_matches,
+    database,
+    csum_annot,
+    name_scores,
+    canonical,
+    trace_ids,
+    sort_by_csum=False,
+):
+    if ctx is None:
+        return
+    uuid_to_daid, name_to_nid, qaid, qnid = trace_ids
+    daids = np.array([uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64)
+    dnids = np.array(
+        [name_to_nid.get(sm.name_uuid, -1) if sm.name_uuid else -1 for sm in scored],
+        dtype=np.int64,
+    )
+    csum = np.array(
+        [float(csum_annot.get(sm.annot_uuid, 0.0)) for sm in scored], dtype=np.float64
+    )
+    nsum = np.array(
+        [
+            (
+                float(name_scores.get(sm.name_uuid, 0.0))
+                if sm.name_uuid and sm.name_uuid in name_scores
+                else 0.0
+            )
+            for sm in scored
+        ],
+        dtype=np.float64,
+    )
+    canon = np.array(
+        [float(canonical.get(sm.annot_uuid, -np.inf)) for sm in scored],
+        dtype=np.float64,
+    )
+    if sort_by_csum:
+        order = np.argsort(
+            [-csum_annot.get(sm.annot_uuid, 0.0) for sm in scored], kind="stable"
+        )
+    else:
+        order = np.argsort(daids)
+    daids, dnids = daids[order], dnids[order]
+    csum, nsum, canon = csum[order], nsum[order], canon[order]
+    fm_list = _fm_arrays_for_scored([scored[i] for i in order], fm_matches, database)
+    ctx.trace_chipmatches(
+        stage, qaid, qnid, daids, dnids, csum, nsum, canon, fm_list, fsv_list=None
+    )
+
+
+def _emit_final(
+    ctx,
+    scored,
+    fm_matches,
+    database,
+    csum_annot,
+    name_scores,
+    score_method,
+    trace_ids,
+):
+    if ctx is None:
+        return
+    uuid_to_daid, name_to_nid, qaid, qnid = trace_ids
+    daids = np.array([uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64)
+    dnids = -daids.copy()
+    csum = np.array(
+        [float(csum_annot.get(sm.annot_uuid, 0.0)) for sm in scored], dtype=np.float64
+    )
+    nsum = np.array(
+        [
+            (
+                float(name_scores.get(sm.name_uuid, 0.0))
+                if sm.name_uuid and sm.name_uuid in name_scores
+                else 0.0
+            )
+            for sm in scored
+        ],
+        dtype=np.float64,
+    )
+    fm_list = _fm_arrays_for_scored(scored, fm_matches, database)
+    ctx.trace_final_scores(
+        qaid=qaid,
+        qnid=qnid,
+        score_method=_trace_score_method(score_method),
+        daid_list=daids,
+        dnid_list=dnids,
+        annot_score_list=csum,
+        name_score_list=nsum,
+        score_list=nsum,
+        fm_list=fm_list,
+    )
+
+
 def identify(
     query_annot_index: int,
     database: list[AnnotatedImage],
@@ -370,72 +479,18 @@ def identify(
     else:
         raise ValueError(f"Unknown score_method: {hs.score_method!r}")
 
-    _uuid_to_daid = {ann.annot_uuid: i + 1 for i, ann in enumerate(database)}
-    _name_to_nid: dict = {}
-    _next_nid = 1
-    for ann in database:
-        if ann.name_uuid is not None and ann.name_uuid not in _name_to_nid:
-            _name_to_nid[ann.name_uuid] = _next_nid
-            _next_nid += 1
-
-    _trace_qaid = query_annot_index + 1
-    _trace_qnid = (
-        _name_to_nid.get(database[query_annot_index].name_uuid, -1)
-        if database[query_annot_index].name_uuid
-        else -1
+    trace_ids = _trace_ids(database, query_annot_index)
+    _emit_chipmatches(
+        ctx,
+        "chipmatches_pre_sv",
+        scored,
+        matches,
+        database,
+        csum_annot,
+        _name_scores,
+        canonical,
+        trace_ids,
     )
-
-    if ctx is not None:
-        _pre_daids = np.array(
-            [_uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64
-        )
-        _pre_dnids = np.array(
-            [
-                _name_to_nid.get(sm.name_uuid, -1) if sm.name_uuid else -1
-                for sm in scored
-            ],
-            dtype=np.int64,
-        )
-        _pre_csum = np.array(
-            [float(csum_annot.get(sm.annot_uuid, 0.0)) for sm in scored],
-            dtype=np.float64,
-        )
-        _pre_nsum = np.array(
-            [
-                (
-                    float(_name_scores.get(sm.name_uuid, 0.0))
-                    if sm.name_uuid and sm.name_uuid in _name_scores
-                    else 0.0
-                )
-                for sm in scored
-            ],
-            dtype=np.float64,
-        )
-        _pre_canonical = np.array(
-            [float(canonical.get(sm.annot_uuid, -np.inf)) for sm in scored],
-            dtype=np.float64,
-        )
-        _pre_sort = np.argsort(_pre_daids)
-        _pre_daids = _pre_daids[_pre_sort]
-        _pre_dnids = _pre_dnids[_pre_sort]
-        _pre_csum = _pre_csum[_pre_sort]
-        _pre_nsum = _pre_nsum[_pre_sort]
-        _pre_canonical = _pre_canonical[_pre_sort]
-        _fm_list_pre = _fm_arrays_for_scored(
-            [scored[i] for i in _pre_sort], matches, database
-        )
-        ctx.trace_chipmatches(
-            "chipmatches_pre_sv",
-            _trace_qaid,
-            _trace_qnid,
-            _pre_daids,
-            _pre_dnids,
-            _pre_csum,
-            _pre_nsum,
-            _pre_canonical,
-            _fm_list_pre,
-            fsv_list=None,
-        )
 
     # ---- 7. Spatial verification ----
     _master_matches = matches
@@ -568,61 +623,18 @@ def identify(
                 m for m in matches if m.daid not in _sv_daid_set
             ]
 
-    if ctx is not None:
-        _post_daids = np.array(
-            [_uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64
-        )
-        _post_dnids = np.array(
-            [
-                _name_to_nid.get(sm.name_uuid, -1) if sm.name_uuid else -1
-                for sm in scored
-            ],
-            dtype=np.int64,
-        )
-        _post_sort = np.argsort(
-            [-csum_annot.get(sm.annot_uuid, 0.0) for sm in scored],
-            kind="stable",
-        )
-        _post_daids = _post_daids[_post_sort]
-        _post_dnids = _post_dnids[_post_sort]
-        _post_csum = np.array(
-            [float(csum_annot.get(sm.annot_uuid, 0.0)) for sm in scored],
-            dtype=np.float64,
-        )
-        _post_nsum = np.array(
-            [
-                (
-                    float(_name_scores.get(sm.name_uuid, 0.0))
-                    if sm.name_uuid and sm.name_uuid in _name_scores
-                    else 0.0
-                )
-                for sm in scored
-            ],
-            dtype=np.float64,
-        )
-        _post_canonical = np.array(
-            [float(canonical.get(sm.annot_uuid, -np.inf)) for sm in scored],
-            dtype=np.float64,
-        )
-        _post_csum = _post_csum[_post_sort]
-        _post_nsum = _post_nsum[_post_sort]
-        _post_canonical = _post_canonical[_post_sort]
-        _fm_list_post = _fm_arrays_for_scored(
-            [scored[i] for i in _post_sort],
-            _master_matches,
-            database,
-        )
-        ctx.trace_chipmatches(
-            "chipmatches_post_sv",
-            _trace_qaid,
-            _trace_qnid,
-            _post_daids,
-            _post_dnids,
-            _post_csum,
-            _post_nsum,
-            _post_canonical,
-            _fm_list_post,
-        )
+    _emit_chipmatches(
+        ctx,
+        "chipmatches_post_sv",
+        scored,
+        _master_matches,
+        database,
+        csum_annot,
+        _name_scores,
+        canonical,
+        trace_ids,
+        sort_by_csum=True,
+    )
 
     dlog.stage_final(scored)
 
@@ -638,39 +650,16 @@ def identify(
         reverse=True,
     )
 
-    if ctx is not None:
-        _daids = np.array(
-            [_uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64
-        )
-        _dnids = -_daids.copy()
-        _final_csum = np.array(
-            [float(csum_annot.get(sm.annot_uuid, 0.0)) for sm in scored],
-            dtype=np.float64,
-        )
-        _final_nsum = np.array(
-            [
-                (
-                    float(_name_scores.get(sm.name_uuid, 0.0))
-                    if sm.name_uuid and sm.name_uuid in _name_scores
-                    else 0.0
-                )
-                for sm in scored
-            ],
-            dtype=np.float64,
-        )
-
-        _fm_list_final = _fm_arrays_for_scored(scored, _master_matches, database)
-        ctx.trace_final_scores(
-            qaid=_trace_qaid,
-            qnid=_trace_qnid,
-            score_method=_trace_score_method(hs.score_method),
-            daid_list=_daids,
-            dnid_list=_dnids,
-            annot_score_list=_final_csum,
-            name_score_list=_final_nsum,
-            score_list=_final_nsum,
-            fm_list=_fm_list_final,
-        )
+    _emit_final(
+        ctx,
+        scored,
+        _master_matches,
+        database,
+        csum_annot,
+        _name_scores,
+        hs.score_method,
+        trace_ids,
+    )
 
     return scored[: hs.num_return]
 
