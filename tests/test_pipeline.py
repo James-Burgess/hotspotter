@@ -123,7 +123,7 @@ class TestIdentify:
 
         identify(0, db, config)
 
-        assert captured["k_total"] == 7
+        assert captured["k_total"] == 8
 
     def test_dynamic_kpad_counts_same_name(self):
         db = _make_synthetic_database(4, 20, same_name_pairs=[(0, 1), (0, 2)])

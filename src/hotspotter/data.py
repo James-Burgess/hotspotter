@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
-@dataclass
+@dataclass(slots=True)
 class FeatureSet:
     """Extracted Hessian-affine SIFT features for one image.
 
@@ -46,7 +46,7 @@ class FeatureSet:
         return f"FeatureSet(N={len(self)})"
 
 
-@dataclass
+@dataclass(slots=True)
 class AnnotatedImage:
     """An annotation with pre-extracted features for identification.
 
@@ -61,7 +61,7 @@ class AnnotatedImage:
     image_uuid: uuid.UUID | None = None
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Match:
     """A single query-feature → database-feature correspondence."""
 
@@ -73,7 +73,7 @@ class Match:
     sv_weight: float | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class ScoredMatch:
     """An annotation-level identification result."""
 

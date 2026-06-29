@@ -88,8 +88,9 @@ wbia-core/
 │   ├── test_*.py                      # Unit + integration tests
 │   ├── benchmark/                     # COCO multi-target regression suite
 │   └── replay/                        # Recorded WBIA fixture replay tests
-├── scripts/                           # run_fixture.py, evaluate_groundtruth.py, etc.
-└── wbia-tpl-pyhesaff/                 # git submodule — C++ source only (Python stripped)
+├── scripts/                           # run_fixture.py, evaluate_groundtruth.py, compare_to_wbia.py, etc.
+├── wbia-tpl-pyhesaff/                 # git submodule — C++ Hessian-affine SIFT source
+└── wbia-tpl-pyflann/                  # git submodule — C++ FLANN approximate KNN library
 ```
 
 ## Build
@@ -102,6 +103,7 @@ stage copies only the `.so` files and Python venv into a slim
 |---|---|---|
 | `libsver.so` | `g++ -shared -fPIC -O2 -fopenmp sver.cpp -lopencv_core` | `_vendor/sver/_sver_cpp/libsver.so` |
 | `libhesaff.so` | `cmake` (multi-file project from `wbia-tpl-pyhesaff`) | `_vendor/pyhesaff/lib/libhesaff.so` |
+| `libflann.so` | `cmake` / scikit-build (from `wbia-tpl-pyflann`) | `pyflann/lib/libflann.so` |
 
 **Image size**: 2.15 GB (down from 9.08 GB pre-extraction). No CUDA,
 no cmake, no `-dev` headers in the runtime image.

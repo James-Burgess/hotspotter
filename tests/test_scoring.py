@@ -131,7 +131,7 @@ class TestBuildMatches:
         assert len(matches) == 1
         assert matches[0].dfx == 0
 
-    def test_skips_column_zero(self):
+    def test_all_columns_processed(self):
         name = uuid.uuid4()
         db = [_make_annot(name, n_feats=3), _make_annot(name, n_feats=3)]
         weights = np.array([[0.5, 0.3, 0.1]], dtype=np.float64)
@@ -141,8 +141,8 @@ class TestBuildMatches:
         matches = build_matches(
             weights, voting_annot, voting_feat, invalid, db, k=2, kpad=1
         )
-        assert len(matches) == 2
-        assert {m.dfx for m in matches} == {1, 2}
+        assert len(matches) == 3
+        assert {m.dfx for m in matches} == {0, 1, 2}
 
 
 class TestScoreMatches:

@@ -157,7 +157,9 @@ def _normalize_distances(ctx, query_annot_index, knn, hs):
     dists = (np.maximum(knn.raw_dists, 0.0) / max_distance_sqrd).astype(np.float64)
     if ctx is not None:
         ctx.trace_neighbors(
-            query_annot_index + 1, knn.raw_labels, dists.astype(np.float32)
+            query_annot_index + 1,
+            knn.raw_labels[:, 1:],
+            dists[:, 1:].astype(np.float32),
         )
     if not hs.sqrd_dist_on:
         dists = np.sqrt(dists)
@@ -167,12 +169,12 @@ def _normalize_distances(ctx, query_annot_index, knn, hs):
 
 def _build_vote_columns(ctx, query_annot_index, dists, labels, knn, k, kpad):
     n_qfxs = dists.shape[0]
-    voting_dists = dists[:, : k + kpad]
-    norm_dists = dists[:, k + kpad :]
+    voting_dists = dists[:, 1 : k + kpad + 1]
+    norm_dists = dists[:, k + kpad + 1 :]
     voting_annot = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
     voting_feat = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
     for j in range(k + kpad):
-        col = labels[:, j]
+        col = labels[:, j + 1]
         valid = (col >= 0) & (col < knn.n_total)
         voting_annot[valid, j] = knn.annot_of_desc[col[valid]]
         voting_feat[valid, j] = knn.feat_of_desc[col[valid]]
@@ -222,7 +224,13 @@ def _score_and_build(
         bar_l2_on=hs.bar_l2_on,
         ratio_thresh=hs.ratio_thresh,
         lnbnn_ratio=hs.lnbnn_ratio,
+        cos_on=hs.cos_on,
+        lograt_on=hs.lograt_on,
+        const_on=hs.const_on,
     )
+
+    if hs.lnbnn_normer is not None and hs.lnbnn_norm_thresh:
+        weights = np.where(weights > hs.lnbnn_norm_thresh, weights, 0.0)
 
     if hs.fg_on:
         fg_weights = [per_feature_fg(ann) for ann in database]
@@ -302,10 +310,12 @@ def _run_spatial_verification(
         sver_candidates,
         query_features,
         database,
-        min_inliers=4,
+        min_inliers=hs.sv_min_n_inliers,
         xy_thresh=hs.sv_xy_thresh,
         scale_thresh=hs.sv_scale_thresh,
         ori_thresh=hs.sv_ori_thresh,
+        full_homog_checks=hs.sv_full_homog_checks,
+        refine_method=hs.sv_refine_method,
         use_chip_extent=hs.sv_use_chip_extent,
         weight_inliers=hs.sv_weight_inliers,
         sver_output_weighting=hs.sv_sver_output_weighting,
@@ -313,6 +323,8 @@ def _run_spatial_verification(
     )
 
     if not sv_results:
+        if hs.sv_abstain_on_fail:
+            return ([], master_matches, {}, {}, {})
         return scored, master_matches, csum_annot, name_scores, canonical
 
     match_lookup: dict[tuple[int, int, int], Match] = {}
@@ -547,7 +559,7 @@ def identify(
 
     k = hs.knn
     kpad = _compute_kpad(hs, query_annot_index, database)
-    k_total = k + kpad + hs.knorm
+    k_total = k + kpad + hs.knorm + 1
 
     query_features = _filter_query_features(database, query_annot_index, hs)
     knn = _query_neighbors(database, query_features, hs, k_total)

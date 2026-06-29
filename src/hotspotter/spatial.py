@@ -31,6 +31,8 @@ def spatial_verify(
     xy_thresh: float | None = None,
     scale_thresh: float | None = None,
     ori_thresh: float | None = None,
+    full_homog_checks: bool = True,
+    refine_method: str = "homog",
     use_chip_extent: bool = True,
     weight_inliers: bool = True,
     sver_output_weighting: bool = False,
@@ -61,6 +63,8 @@ def spatial_verify(
         xy_thresh: max spatial displacement ratio (WBIA default 0.01).
         scale_thresh: max scale ratio (WBIA default 2.0).
         ori_thresh: max orientation delta in radians (WBIA default TAU/4).
+        full_homog_checks: run full homography xy/scale/orientation checks.
+        refine_method: transform refinement method (WBIA default ``"homog"``).
         use_chip_extent: scale threshold by chip size (WBIA default True).
         weight_inliers: compute per-inlier homog-error weights.
 
@@ -136,8 +140,9 @@ def spatial_verify(
             dlen_sqrd2=dlen_sqrd2,
             min_nInliers=min_inliers,
             match_weights=match_weights,
+            full_homog_checks=full_homog_checks,
             returnAff=True,
-            refine_method="homog",
+            refine_method=refine_method,
         )
         if svtup is None:
             continue

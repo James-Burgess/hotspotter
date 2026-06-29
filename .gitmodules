@@ -1,3 +1,6 @@
 [submodule "wbia-tpl-pyhesaff"]
 	path = wbia-tpl-pyhesaff
 	url = git@github.com:WildMeOrg/wbia-tpl-pyhesaff.git
+[submodule "wbia-tpl-pyflann"]
+	path = wbia-tpl-pyflann
+	url = git@github.com:WildMeOrg/wbia-tpl-pyflann.git

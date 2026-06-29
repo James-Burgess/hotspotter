@@ -138,6 +138,8 @@ def query_index(
         ``(distances [M, k] float32, labels [M, k] int32)``.
     """
     q = query_features.descriptors.astype(np.float32, copy=False)
+    if backend == "faiss" and not hasattr(index, "search"):
+        backend = "pyflann"
     if backend == "faiss":
         return index.search(q, k)
     else:

@@ -1514,4 +1514,119 @@ wbia-core/
 └── docs/development/
     ├── devlog.md                   # This file
     └── parity-analysis.md          # Full parity investigation log
+
+---
+
+## 2026-06-29 — Dependency stripping, multi-stage build, scoring reconciliation
+
+### What was done
+
+1. **sver.cpp FIXME resolved**: Changed `>=` to `>` in the OpenMP affine-inlier
+   tie-breaking at `wbia-vtool/src/cpp/sver/sver.cpp:332`. This removes the
+   non-determinism source the WBIA devs flagged with `# FIXME: there is a
+   non-determenism here`.
+
+2. **vtool extraction** → `_vendor/sver/`: Extracted the 5 functions hotspotter
+   actually uses from vtool's 41-file, 15K-line codebase. Replaced
+   `import utool` with `os.environ`, `traceback`, and stdlib calls. Build
+   changed from scikit-build/CMake to a single `g++` invocation:
+   ```bash
+   g++ -shared -fPIC -O2 -fopenmp sver.cpp -lopencv_core -o libsver.so
+   ```
+
+3. **pyhesaff extraction** → `_vendor/pyhesaff/`: Stripped the 1054-line
+   `_pyhesaff.py` to 140 lines retaining only `detect_feats_in_image` and
+   `get_hesaff_default_params`. Eliminated `six`, `ubelt`, and `utool`
+   imports. The C++ extension is built via cmake from the remaining
+   `wbia-tpl-pyhesaff` submodule source; only the resulting `libhesaff.so`
+   is copied into `_vendor/pyhesaff/lib/`.
+
+4. **Submodules killed**: Removed `wbia-utool`, `wbia-vtool`, and
+   `wbia-tpl-pyflann` from git. Only `wbia-tpl-pyhesaff` remains (C++
+   source for `libhesaff.so` build, no Python package installed).
+
+5. **Multi-stage Docker build**: Build stage on `nvidia/cuda` compiles both
+   C++ extensions + installs Python deps into a venv. Runtime stage is clean
+   `ubuntu:22.04` with only `libopencv-core4.5d` + `libomp5` + Python +
+   the venv copied from build.
+
+   **Image size**: 9.08GB → **2.15GB** (76% reduction).
+
+6. **No GPU acceleration**: Confirmed zero CUDA/GPU usage in hesaff and sver
+   C++ source. The `nvidia/cuda` base was dead weight inherited from WBIA's
+   monolithic Docker; the multi-stage build sheds it entirely at runtime.
+
+7. **pyflann → optional**: `knn_backend="flann"` is documented but pyflann
+   is no longer installed by default. Default backend changed from `"pyflann"`
+   to `"faiss"` across `knn.py`; faiss-cpu is now a build dependency.
+
+8. **README overhaul**: Updated submodule section (3 dead, 1 remains),
+   architecture tree now shows `_vendor/sver/` and `_vendor/pyhesaff/`,
+   added 6 config presets table, SIFT extraction params, three-layer test
+   net documentation, ZSTD compression note.
+
+### 16-config golden replay
+
+Generated committed golden traces for every meaningful config axis:
+`default`, `fg_on`, `bar_l2`, `ratio`, `normonly`, `normalizer_name`,
+`sqrd_dist`, `no_samename`, `no_sameimg`, `csum`, `nsum_wbia`, `csum_wbia`,
+`sumamech`, `rot_invariance`, `sv_off`, `all_filters`.
+
+3.1MB total in `tests/assets/golden_traces/`. Parquet: ZSTD compression.
+Numpy arrays: `np.savez_compressed` (`.npz` format).
+
+New test: `tests/test_golden_replay.py` — parametrized over 16 configs,
+checks pre-SV stages bit-exact against committed goldens. All pass (39s).
+
+### Scoring reconciliation (the big one)
+
+**Problem**: `pipeline.py` had three functions (`_baseline_filter`,
+`_normalizer_validity`, `_build_matches`, 107 lines total) re-implementing
+logic that `scoring.py` should own. Two divergent implementations of the
+same algorithm — the single biggest architecture smell in the codebase.
+
+**Resolution**: Made `scoring.py` the single source of truth.
+
+Functions unified in scoring.py:
+
+| Function | What it does |
+|---|---|
+| `baseline_filter` | Self/same-name/same-image mask (was `filter_self_matches`) |
+| `compute_normalizer_validity` | Name-based normalizer check (moved from pipeline) |
+| `weight_neighbors_lnbnn` | Vectorized LNBNN + bar_l2 + ratio + normonly + lnbnn_ratio + `max(0)` clamp |
+| `apply_fg_weights` | FG weighting |
+| `build_matches` | Weight matrix → `list[Match]`, skips col 0 (WBIA parity) |
+| `score_matches` | Simple csum/nsum aggregation |
+
+Pipeline changes:
+- Deleted `_baseline_filter`, `_normalizer_validity`, `_build_matches` (107 lines)
+- Added `_score_and_build` (60 lines) — thin orchestrator that calls scoring
+  functions in order with trace/dlog hooks between them
+- `identify()` scoring block shrank from ~15 lines to 3:
+  `matches = _score_and_build(ctx, qidx, votes, dists, labels, knn, db, hs, k, kpad)`
+
+WBIA faithfulness fixes:
+- Added the `max(0, ...)` clamp that was **missing** from the old pipeline
+  inline code. WBIA formula is `max(0, norm - nn)`. Old pipeline did
+  `w = ndist - vdist` (could go negative).
+- Preserved column-0 skip (`range(1, k+kpad)`) — WBIA parity artifact
+  from when the query was in its own index.
+- Deleted `const_on` (was `w *= 1.0` — mathematical no-op).
+
+### Code audit — easy wins
+
+Applied 5 of the top-10 audit fixes:
+1. Fixed `pipeline.py:119` backend tautology (`"faiss" else "faiss"` → `"pyflann" else "faiss"`)
+2. Deleted `exceptions.py` (7 classes, zero imports, `IndexError` shadowed builtin)
+3. Removed debug `print()` at `pipeline.py:568-574` (reaching into `TraceContext` privates)
+4. Hoisted magic `524288` to `SIFT_MAX_SQRT_DIST` constant in `pipeline.py` + `debug_log.py`
+5. Fixed mutable default arg `config=IdentificationConfig()` + dead assignment at `pipeline.py:559`
+
+### Test results
+
+| Layer | Count | Result |
+|---|---|---|
+| Unit (scoring, pipeline, knn, spatial, features, config, data) | 58 pass, 1 skip | green |
+| Golden replay (16 configs, bit-exact pre-SV) | 16 pass | green |
+| Silver parity (HS vs WBIA decision parity) | 2 pass | green |
 ```

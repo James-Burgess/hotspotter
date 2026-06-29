@@ -42,6 +42,11 @@ RUN cd wbia-tpl-pyhesaff \
     && cp pyhesaff/lib/libhesaff*.so /app/src/hotspotter/_vendor/pyhesaff/lib/ \
     && cd ..
 
+# -- Install pyflann from submodule --------------------------------------------
+ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.5.dev10
+RUN cd wbia-tpl-pyflann \
+    && pip3 install --no-cache-dir .
+
 # -- Install Python deps + hotspotter itself into venv -------------------------
 RUN pip3 install --no-cache-dir \
     'numpy>=1.24,<2' \

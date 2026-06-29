@@ -24,7 +24,9 @@ class HotSpotterConfig(BaseModel):
         description="Number of normalizer neighbor columns. WBIA default: 1.",
     )
     kpad: int = Field(
-        default=1, ge=0, description="Extra K columns for self-match buffer"
+        default=0,
+        ge=0,
+        description="Extra K columns for impossible-match buffer (WBIA default: 0).",
     )
     kpad_policy: Literal["fixed", "dynamic"] = Field(
         default="fixed",
@@ -109,6 +111,27 @@ class HotSpotterConfig(BaseModel):
         gt=0.0,
         description="Max orientation delta in radians (WBIA default: TAU/4).",
     )
+    sv_min_n_inliers: int = Field(
+        default=4,
+        ge=1,
+        description="Minimum affine inliers before refinement (WBIA min_nInliers).",
+    )
+    sv_full_homog_checks: bool = Field(
+        default=True,
+        description="Run full homography xy/scale/orientation checks (WBIA default: True).",
+    )
+    sv_refine_method: Literal[
+        "homog", "affine", "cv2-homog", "cv2-ransac-homog", "cv2-lmeds-homog"
+    ] = Field(
+        default="homog", description="SV refinement method (WBIA default: homog)."
+    )
+    sv_abstain_on_fail: bool = Field(
+        default=False,
+        description="When True and SV is on, return an empty ranking when no "
+        "candidate passes spatial verification (matching WBIA's ChipMatch with "
+        "empty daid_list). Default False preserves the current always-guess "
+        "behaviour.",
+    )
     sv_use_chip_extent: bool = Field(default=True)
     sv_weight_inliers: bool = Field(
         default=True,
@@ -132,6 +155,30 @@ class HotSpotterConfig(BaseModel):
 
     bar_l2_on: bool = Field(default=False)
 
+    const_on: bool = Field(
+        default=False,
+        description="Replace LNBNN distance weights with uniform constant weights "
+        "(WBIA default: False).",
+    )
+    lograt_on: bool = Field(
+        default=False,
+        description="Apply log10 transform to LNBNN weights (WBIA default: False).",
+    )
+    cos_on: bool = Field(
+        default=False,
+        description="Use cosine similarity instead of L2 for feature matching "
+        "(WBIA default: False).",
+    )
+    lnbnn_normer: Optional[str] = Field(
+        default=None,
+        description="LNBNN score normalizer (WBIA default: None).",
+    )
+    lnbnn_norm_thresh: float = Field(
+        default=0.5,
+        gt=0.0,
+        description="Threshold for lnbnn_normer (WBIA default: 0.5).",
+    )
+
     knn_backend: Literal["exact", "flann", "faiss"] = Field(
         default="exact",
         description=(
@@ -142,23 +189,19 @@ class HotSpotterConfig(BaseModel):
     )
     flann_algorithm: str = Field(default="kdtree")
     flann_trees: int = Field(
-        default=4,
-        description="Number of kd-trees. WBIA nightly builds with 8 "
-        "(wildbook-ia Config.py:379 flann_cfg.trees=8); HS library default is 4. "
-        "Parity scripts pin both sides to 8 via --trees.",
+        default=8,
+        description="Number of kd-trees (WBIA default: 8).",
     )
     flann_random_seed: int = Field(
-        default=-1,
-        description="Random seed for FLANN index building. WBIA uses 42 "
-        "(core_annots.py:1616); HS library default -1. Parity scripts pin both "
-        "sides to 42 via --seed.",
+        default=42,
+        description="Random seed for FLANN index building (WBIA default: 42).",
     )
     flann_checks: int = Field(
-        default=32,
-        description="FLANN search thoroughness (WBIA default: 32).",
+        default=800,
+        description="FLANN search thoroughness (WBIA default: 800).",
     )
     flann_cores: int = Field(
-        default=1, description="FLANN thread count (WBIA default: 1)."
+        default=0, description="FLANN thread count (WBIA default: 0 = auto)."
     )
 
 

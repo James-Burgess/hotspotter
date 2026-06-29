@@ -58,6 +58,11 @@ CONFIGS: dict[str, dict] = {
     "rot_invariance": {"rotation_invariance": True, "score_method": "nsum_wbia"},
     "sv_off": {"sv_on": False},
     "all_filters": {"fg_on": True, "bar_l2_on": True, "ratio_thresh": 0.8},
+    "const_on": {"const_on": True},
+    "lograt_on": {"lograt_on": True},
+    "cos_on": {"cos_on": True},
+    "lnbnn_normer": {"lnbnn_normer": "dummy", "lnbnn_norm_thresh": 0.01},
+    "kpad_dynamic": {"kpad_policy": "dynamic"},
 }
 
 

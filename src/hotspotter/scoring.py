@@ -116,7 +116,7 @@ def compute_normalizer_validity(
     voting_names[voting_ok] = db_names[voting_annot[voting_ok]]
 
     normalizer_valid = np.ones(n_qfxs, dtype=bool)
-    for j in range(1, k + kpad):
+    for j in range(k + kpad):
         vn = voting_names[:, j]
         has_name = (norm_names != None) & (vn != None)  # noqa: E711
         conflict = np.zeros(n_qfxs, dtype=bool)
@@ -140,6 +140,9 @@ def weight_neighbors_lnbnn(
     bar_l2_on: bool = False,
     ratio_thresh: float | None = None,
     lnbnn_ratio: float = 1.0,
+    cos_on: bool = False,
+    lograt_on: bool = False,
+    const_on: bool = False,
 ) -> np.ndarray:
     """LNBNN weight computation with optional filter chain.
 
@@ -147,12 +150,18 @@ def weight_neighbors_lnbnn(
 
         w = max(0, norm_dist - nn_dist)
 
-    Optional multiplicative filters applied in WBIA order:
+    Optional modes applied in WBIA order:
+    - ``cos_on``: convert L2 distances to soft cosine similarity via
+      ``1/(1+d)`` before LNBNN (approximates cosine distance for
+      normalized feature-space distances).
     - ``normonly_on``: replace nn_dist with norm_dist (debug).
     - ``bar_l2_on``: ``w *= 1.0 - nn_dist``.
     - ``ratio_thresh``: skip (zero) where ``nn_dist / norm_dist > thresh``,
       multiply surviving by ``1.0 - ratio``.
     - ``lnbnn_ratio``: zero where ``nn_dist > norm_dist * ratio``.
+    - ``lograt_on``: apply ``log(w + 1)`` transform (WBIA ``loglnbnn_fn``).
+    - ``const_on``: replace all non-zero weights with uniform 1.0
+      (WBIA ``const_match_weighter``).
 
     Args:
         voting_dists: [N, K+Kpad] float64 — normalized distances.
@@ -161,6 +170,9 @@ def weight_neighbors_lnbnn(
         bar_l2_on: apply bar-L2 multiplicative penalty.
         ratio_thresh: Lowe's ratio test threshold.
         lnbnn_ratio: LNBNN ratio clamp.
+        cos_on: apply cosine-similarity transform to distances.
+        lograt_on: apply log transform to weights.
+        const_on: replace all non-zero weights with 1.0.
 
     Returns:
         [N, K+Kpad] float64 weight matrix.
@@ -171,7 +183,11 @@ def weight_neighbors_lnbnn(
     else:
         vdist = voting_dists
 
-    weights = np.maximum(0.0, ndist - vdist)
+    if cos_on:
+        weights = np.maximum(0.0, 1.0 - vdist)
+        weights[vdist >= ndist] = 0.0
+    else:
+        weights = np.maximum(0.0, ndist - vdist)
 
     if lnbnn_ratio < 1.0:
         weights[vdist > ndist * lnbnn_ratio] = 0.0
@@ -182,6 +198,12 @@ def weight_neighbors_lnbnn(
     if ratio_thresh is not None:
         ratio = np.divide(vdist, ndist, out=np.ones_like(vdist), where=ndist > 0)
         weights = np.where(ratio > ratio_thresh, 0.0, weights * (1.0 - ratio))
+
+    if lograt_on:
+        weights = np.log(weights + 1.0)
+
+    if const_on:
+        weights = np.where(weights > 0, 1.0, 0.0)
 
     return weights.astype(np.float64)
 
@@ -266,7 +288,7 @@ def build_matches(
     for qfx in range(n_qfxs):
         if normalizer_valid is not None and not normalizer_valid[qfx]:
             continue
-        for j in range(1, k + kpad):
+        for j in range(k + kpad):
             db_idx = int(voting_annot[qfx, j])
             if db_idx < 0 or invalid[qfx, j]:
                 continue
