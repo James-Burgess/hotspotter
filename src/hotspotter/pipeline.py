@@ -14,6 +14,7 @@ Matches WBIA's global-index ``vsmany`` pipeline:
 from __future__ import annotations
 
 import uuid
+from typing import NamedTuple
 
 import numpy as np
 
@@ -53,6 +54,375 @@ def _compute_kpad(hs, query_annot_index: int, database: list[AnnotatedImage]) ->
             if i != query_annot_index and a.image_uuid == qann.image_uuid:
                 impossible.add(i)
     return len(impossible)
+
+
+_WBIA_SCORE_METHODS = frozenset({"csum", "csum_wbia", "nsum", "nsum_wbia", "sumamech"})
+
+
+class KnnResult(NamedTuple):
+    raw_dists: np.ndarray
+    raw_labels: np.ndarray
+    annot_of_desc: np.ndarray
+    feat_of_desc: np.ndarray
+    n_total: int
+    db_feature_sets: list
+
+
+class VoteColumns(NamedTuple):
+    voting_dists: np.ndarray
+    norm_dists: np.ndarray
+    voting_annot: np.ndarray
+    voting_feat: np.ndarray
+
+
+def _filter_query_features(database, query_annot_index, hs):
+    query = database[query_annot_index].features
+    feat_mask = np.ones(len(query), dtype=bool)
+    if hs.minscale_thresh is not None:
+        feat_mask &= query.keypoints[:, 2] >= hs.minscale_thresh
+    if hs.maxscale_thresh is not None:
+        feat_mask &= query.keypoints[:, 2] <= hs.maxscale_thresh
+    if hs.fgw_thresh is not None:
+        feat_mask &= per_feature_fg(database[query_annot_index]) >= hs.fgw_thresh
+    if feat_mask.all():
+        return query
+    filtered = FeatureSet(
+        keypoints=query.keypoints[feat_mask],
+        descriptors=query.descriptors[feat_mask],
+    )
+    assert (
+        len(filtered) > 0
+    ), "All query features filtered out by minscale/maxscale/fgw_thresh"
+    return filtered
+
+
+def _query_neighbors(database, query_features, hs, k_total):
+    db_feature_sets = [ann.features for ann in database]
+    db_remap = np.arange(len(database), dtype=np.int32)
+    if hs.knn_backend == "exact":
+        all_descs = np.concatenate([fs.descriptors for fs in db_feature_sets], axis=0)
+        n_total = all_descs.shape[0]
+        annot_of_desc = np.empty(n_total, dtype=np.int32)
+        feat_of_desc = np.empty(n_total, dtype=np.int32)
+        offset = 0
+        for i, fs in enumerate(db_feature_sets):
+            n = len(fs)
+            annot_of_desc[offset : offset + n] = db_remap[i]
+            feat_of_desc[offset : offset + n] = np.arange(n, dtype=np.int32)
+            offset += n
+        db_feats = FeatureSet(
+            keypoints=np.empty((n_total, 6), dtype=np.float64),
+            descriptors=all_descs,
+        )
+        raw_dists, raw_labels = exact_knn(query_features, db_feats, k_total)
+    else:
+        backend = "pyflann" if hs.knn_backend == "flann" else "faiss"
+        global_index, annot_of_desc_local, feat_of_desc = build_global_index(
+            db_feature_sets,
+            algorithm=hs.flann_algorithm,
+            trees=hs.flann_trees,
+            random_seed=hs.flann_random_seed,
+            backend=backend,
+        )
+        annot_of_desc = db_remap[annot_of_desc_local]
+        n_total = annot_of_desc.shape[0]
+        raw_dists, raw_labels = query_index(
+            global_index,
+            query_features,
+            k_total,
+            checks=hs.flann_checks,
+            cores=hs.flann_cores,
+            backend=backend,
+        )
+    dlog.stage_global_index(db_feature_sets, annot_of_desc)
+    dlog.stage_raw_dists(raw_dists, raw_labels)
+    return KnnResult(
+        raw_dists, raw_labels, annot_of_desc, feat_of_desc, n_total, db_feature_sets
+    )
+
+
+SIFT_MAX_SQRT_DIST = 2.0 * (512.0**2.0)
+
+
+def _normalize_distances(ctx, query_annot_index, knn, hs):
+    max_distance_sqrd = SIFT_MAX_SQRT_DIST
+    dists = (np.maximum(knn.raw_dists, 0.0) / max_distance_sqrd).astype(np.float64)
+    if ctx is not None:
+        ctx.trace_neighbors(
+            query_annot_index + 1, knn.raw_labels, dists.astype(np.float32)
+        )
+    if not hs.sqrd_dist_on:
+        dists = np.sqrt(dists)
+    dlog.stage_dist_norm(dists)
+    return dists, knn.raw_labels.astype(np.int64)
+
+
+def _build_vote_columns(ctx, query_annot_index, dists, labels, knn, k, kpad):
+    n_qfxs = dists.shape[0]
+    voting_dists = dists[:, : k + kpad]
+    norm_dists = dists[:, k + kpad :]
+    voting_annot = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
+    voting_feat = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
+    for j in range(k + kpad):
+        col = labels[:, j]
+        valid = (col >= 0) & (col < knn.n_total)
+        voting_annot[valid, j] = knn.annot_of_desc[col[valid]]
+        voting_feat[valid, j] = knn.feat_of_desc[col[valid]]
+    dlog.stage_voting_cols(dists, labels, knn.annot_of_desc, k, kpad, query_annot_index)
+    return VoteColumns(voting_dists, norm_dists, voting_annot, voting_feat)
+
+
+def _baseline_filter(
+    ctx, query_annot_index, votes, dists, labels, knn, database, hs, k, kpad
+):
+    qann = database[query_annot_index]
+    qname = qann.name_uuid
+    same_name_set = (
+        set()
+        if (hs.can_match_samename or qname is None)
+        else {
+            i
+            for i, a in enumerate(database)
+            if i != query_annot_index and a.name_uuid == qname
+        }
+    )
+    qimg = qann.image_uuid
+    same_image_set = (
+        set()
+        if (hs.can_match_sameimg or qimg is None)
+        else {
+            i
+            for i, a in enumerate(database)
+            if i != query_annot_index and a.image_uuid == qimg
+        }
+    )
+    impossible_set = same_name_set | same_image_set
+    invalid = (votes.voting_annot == query_annot_index) | np.isin(
+        votes.voting_annot, list(impossible_set)
+    )
+    dlog.stage_filter_counts(
+        dists, labels, knn.annot_of_desc, k, kpad, query_annot_index, impossible_set
+    )
+    if ctx is not None:
+        ctx.trace_baseline_filter(query_annot_index + 1, ~invalid)
+    return invalid, impossible_set, qname
+
+
+def _normalizer_validity(labels, knn, votes, database, k, kpad, qname):
+    n_qfxs = labels.shape[0]
+    norm_col_labels = labels[:, -1]
+    norm_ok = (norm_col_labels >= 0) & (norm_col_labels < knn.n_total)
+    norm_annots = np.full(n_qfxs, -1, dtype=np.int32)
+    norm_annots[norm_ok] = knn.annot_of_desc[norm_col_labels[norm_ok]]
+    db_names = np.array([a.name_uuid for a in database], dtype=object)
+    norm_names = np.full(n_qfxs, None, dtype=object)
+    norm_names[norm_ok] = db_names[norm_annots[norm_ok]]
+    voting_names = np.full_like(votes.voting_annot, None, dtype=object)
+    voting_ok = votes.voting_annot >= 0
+    voting_names[voting_ok] = db_names[votes.voting_annot[voting_ok]]
+    normalizer_valid = np.ones(n_qfxs, dtype=bool)
+    for j in range(1, k + kpad):
+        conflict = np.zeros(n_qfxs, dtype=bool)
+        vn = voting_names[:, j]
+        has_name = (norm_names != None) & (vn != None)  # noqa: E711
+        conflict[has_name] = norm_names[has_name] == vn[has_name]
+        normalizer_valid &= ~conflict
+    if qname is not None:
+        qname_conflict = np.zeros(n_qfxs, dtype=bool)
+        has_qn = norm_names != None  # noqa: E711
+        qname_conflict[has_qn] = norm_names[has_qn] == qname
+        normalizer_valid &= ~qname_conflict
+    normalizer_valid &= norm_ok
+    return normalizer_valid
+
+
+def _build_matches(
+    ctx, query_annot_index, votes, database, hs, k, kpad, invalid, normalizer_valid
+):
+    fg_weights = [per_feature_fg(ann) for ann in database] if hs.fg_on else None
+    q_fgw = fg_weights[query_annot_index] if hs.fg_on else None
+    n_qfxs = votes.voting_dists.shape[0]
+    matches: list[Match] = []
+    lnbnn_weights: list[float] = []
+    for qfx in range(n_qfxs):
+        if normalizer_valid is not None and not normalizer_valid[qfx]:
+            continue
+        for j in range(1, k + kpad):
+            vdist = float(
+                votes.norm_dists[qfx, 0]
+                if hs.normonly_on
+                else votes.voting_dists[qfx, j]
+            )
+            ndist = float(votes.norm_dists[qfx, 0])
+            w = ndist - vdist
+            db_idx = int(votes.voting_annot[qfx, j])
+            if db_idx < 0 or invalid[qfx, j]:
+                continue
+            dfx = int(votes.voting_feat[qfx, j])
+            if dfx < 0:
+                continue
+            if hs.fg_on and q_fgw is not None:
+                w *= np.sqrt(float(q_fgw[qfx]) * float(fg_weights[db_idx][dfx]))
+            if hs.bar_l2_on:
+                w *= 1.0 - vdist
+            if hs.ratio_thresh is not None:
+                ratio = vdist / ndist if ndist > 0 else 1.0
+                if ratio > hs.ratio_thresh:
+                    continue
+                w *= 1.0 - ratio
+            if hs.const_on:
+                w *= 1.0
+            lnbnn_weights.append(w)
+            matches.append(
+                Match(
+                    qfx=qfx,
+                    daid=db_idx,
+                    dfx=dfx,
+                    dist=w,
+                    name_uuid=database[db_idx].name_uuid,
+                )
+            )
+    dlog.stage_lnbnn_weights(lnbnn_weights)
+    if ctx is not None:
+        ctx.trace_neighbor_weights(query_annot_index + 1, lnbnn_weights)
+    return matches, lnbnn_weights
+
+
+def _score_matches(matches, database, query_features, hs):
+    annot_uuids = [a.annot_uuid for a in database]
+    annot_name_map = {
+        a.annot_uuid: a.name_uuid for a in database if a.name_uuid is not None
+    }
+    qk = query_features.keypoints if hs.rotation_invariance else None
+    if hs.score_method not in _WBIA_SCORE_METHODS:
+        raise ValueError(f"Unknown score_method: {hs.score_method!r}")
+    csum_annot, name_scores, canonical = score_matches_with_names(
+        matches, annot_uuids, annot_name_map, hs.score_method, qk
+    )
+    scored = _wbia_scores_to_scoredmatches(
+        csum_annot, canonical, matches, database, annot_uuids
+    )
+    _annot_to_matches: dict[int, tuple[float, int]] = {}
+    for sm in scored:
+        daid = next(i for i, a in enumerate(database) if a.annot_uuid == sm.annot_uuid)
+        _annot_to_matches[daid] = (csum_annot.get(sm.annot_uuid, 0.0), sm.num_matches)
+    dlog.stage_match_to_annot(_annot_to_matches)
+    return scored, csum_annot, name_scores, canonical
+
+
+def _run_spatial_verification(
+    scored, matches, database, query_features, hs, csum_annot, name_scores, canonical
+):
+    master_matches: list[Match] = list(matches)
+    if not hs.sv_on:
+        return scored, master_matches, csum_annot, name_scores, canonical
+
+    prescored = scored
+    if hs.prescore_method != hs.score_method:
+        prescored = _prescore_candidates(matches, database, hs.prescore_method)
+    if hs.sv_verify_all:
+        sver_candidates = list(prescored)
+    else:
+        sver_candidates = make_sver_shortlist(
+            prescored,
+            n_names=hs.sv_n_name_shortlist,
+            n_annots_per_name=hs.sv_n_annot_per_name,
+            score_method=hs.score_method,
+        )
+    dist_lookup: dict[tuple[int, int, int], float] = {}
+    for m in matches:
+        dist_lookup[(m.daid, m.qfx, m.dfx)] = m.dist
+    sver_candidates, sv_results = spatial_verify(
+        sver_candidates,
+        query_features,
+        database,
+        min_inliers=4,
+        xy_thresh=hs.sv_xy_thresh,
+        scale_thresh=hs.sv_scale_thresh,
+        ori_thresh=hs.sv_ori_thresh,
+        use_chip_extent=hs.sv_use_chip_extent,
+        weight_inliers=hs.sv_weight_inliers,
+        sver_output_weighting=hs.sv_sver_output_weighting,
+        dist_lookup=dist_lookup,
+    )
+
+    if not sv_results:
+        return scored, master_matches, csum_annot, name_scores, canonical
+
+    match_lookup: dict[tuple[int, int, int], Match] = {}
+    for m in matches:
+        match_lookup[(m.daid, m.qfx, m.dfx)] = m
+    sv_matches: list[Match] = []
+    for annot_uuid, (inlier_qfxs, inlier_dfxs, weights) in sv_results.items():
+        daid = next(i for i, a in enumerate(database) if a.annot_uuid == annot_uuid)
+        for qfx, dfx, w in zip(inlier_qfxs, inlier_dfxs, weights, strict=True):
+            orig = match_lookup.get((daid, qfx, dfx))
+            if orig is None:
+                continue
+            sv_w = float(w) if hs.sv_sver_output_weighting else 1.0
+            sv_matches.append(
+                Match(
+                    qfx=qfx,
+                    daid=daid,
+                    dfx=dfx,
+                    dist=orig.dist * sv_w,
+                    name_uuid=orig.name_uuid,
+                    sv_weight=sv_w,
+                )
+            )
+
+    annot_uuids = [a.annot_uuid for a in database]
+    annot_name_map = {
+        a.annot_uuid: a.name_uuid for a in database if a.name_uuid is not None
+    }
+    if hs.score_method in _WBIA_SCORE_METHODS:
+        qk = query_features.keypoints if hs.rotation_invariance else None
+        sv_csum, sv_name_scores, sv_canonical = score_matches_with_names(
+            sv_matches, annot_uuids, annot_name_map, hs.score_method, qk
+        )
+        sv_scored = _wbia_scores_to_scoredmatches(
+            sv_csum, sv_canonical, sv_matches, database, annot_uuids
+        )
+    else:
+        simple_score_method = "csum" if hs.score_method == "nsum" else hs.score_method
+        sv_scored = score_matches(sv_matches, database, simple_score_method)
+        sv_name_scores = {}
+        sv_csum = {}
+        sv_canonical = {}
+
+    sv_annot_uuids = set(sv_results.keys())
+    sv_inlier_info = {
+        sm.annot_uuid: (sm.sv_inliers, sm.sv_homography)
+        for sm in sver_candidates
+        if sm.sv_inliers > 0
+    }
+    sv_score_map = {sm.annot_uuid: sm for sm in sv_scored}
+    for sm in scored:
+        if sm.annot_uuid in sv_score_map:
+            replaced = sv_score_map[sm.annot_uuid]
+            inliers, H = sv_inlier_info.get(sm.annot_uuid, (0, None))
+            sm.sv_inliers = inliers
+            sm.sv_homography = H
+            sm.score = replaced.score
+            sm.num_matches = replaced.num_matches
+            sm.correspondences = replaced.correspondences
+
+    for sm in scored:
+        au = sm.annot_uuid
+        if au in sv_annot_uuids:
+            csum_annot[au] = sv_csum.get(au, csum_annot.get(au, 0.0))
+            canonical[au] = sv_canonical.get(au, canonical.get(au, -np.inf))
+        nu = sm.name_uuid
+        if nu is not None and nu in sv_name_scores:
+            name_scores[nu] = sv_name_scores[nu]
+
+    scored = [sm for sm in scored if sm.annot_uuid in sv_annot_uuids]
+
+    sv_daid_set = {sm.daid for sm in sv_matches}
+    master_matches = list(sv_matches) + [
+        m for m in matches if m.daid not in sv_daid_set
+    ]
+    return scored, master_matches, csum_annot, name_scores, canonical
 
 
 def _trace_ids(database, query_annot_index):
@@ -167,7 +537,7 @@ def _emit_final(
 def identify(
     query_annot_index: int,
     database: list[AnnotatedImage],
-    config: IdentificationConfig = IdentificationConfig(),
+    config: IdentificationConfig | None = None,
     trace_query_index: int | None = None,
 ) -> list[ScoredMatch]:
     """Run the identification pipeline for one query against *database*.
@@ -188,8 +558,9 @@ def identify(
     Returns:
         Top-``config.hotspotter.num_return`` scored matches descending.
     """
+    if config is None:
+        config = IdentificationConfig()
     hs = config.hotspotter
-    query_features = database[query_annot_index].features
 
     dlog.stage_features(database)
 
@@ -198,13 +569,6 @@ def identify(
             trace_query_index if trace_query_index is not None else query_annot_index
         )
     )
-    if ctx is not None:
-        print(
-            f"[pipeline] trace_context created: run_id={ctx._run_id!r} "
-            f"base={ctx._base!r} config_label={ctx._config_label!r} "
-            f"query_index={ctx._query_index!r}",
-            flush=True,
-        )
 
     if ctx is not None:
         ctx.trace_annotations(database, query_annot_index)
@@ -216,268 +580,31 @@ def identify(
         )
 
     k = hs.knn
-    knorm = hs.knorm
     kpad = _compute_kpad(hs, query_annot_index, database)
-    k_total = k + kpad + knorm  # e.g. 4 + 0 + 1 = 5
+    k_total = k + kpad + hs.knorm
 
-    # ---- 0. Pre-query feature filtering (minscale/maxscale/fgw_thresh) ----
-    query_kp = query_features.keypoints
-    query_desc = query_features.descriptors
-    feat_mask = np.ones(len(query_features), dtype=bool)
+    query_features = _filter_query_features(database, query_annot_index, hs)
+    knn = _query_neighbors(database, query_features, hs, k_total)
 
-    if hs.minscale_thresh is not None:
-        scales = query_kp[:, 2]
-        feat_mask &= scales >= hs.minscale_thresh
-    if hs.maxscale_thresh is not None:
-        scales = query_kp[:, 2]
-        feat_mask &= scales <= hs.maxscale_thresh
-    if hs.fgw_thresh is not None:
-        q_fg = per_feature_fg(database[query_annot_index])
-        feat_mask &= q_fg >= hs.fgw_thresh
+    dists, labels = _normalize_distances(ctx, query_annot_index, knn, hs)
+    votes = _build_vote_columns(ctx, query_annot_index, dists, labels, knn, k, kpad)
 
-    if not feat_mask.all():
-        query_features = FeatureSet(
-            keypoints=query_kp[feat_mask],
-            descriptors=query_desc[feat_mask],
-        )
-        assert (
-            len(query_features) > 0
-        ), "All query features filtered out by minscale/maxscale/fgw_thresh"
-
-    # ---- 1. Build global FLANN index over ALL annotations (query included) ----
-    # WBIA includes the query (Kpad=1) so the kd-tree topology matches across
-    # processes. Different point-sets produce different near-tie resolution in
-    # FLANN's kd-tree search, which cascades into fm-list divergence (80%→??).
-    db_feature_sets: list[FeatureSet] = []
-    db_to_original: list[int] = []
-    for i, ann in enumerate(database):
-        db_feature_sets.append(ann.features)
-        db_to_original.append(i)
-    db_remap = np.array(db_to_original, dtype=np.int32)
-
-    if hs.knn_backend == "exact":
-        import numpy as _np
-
-        all_descs = _np.concatenate([fs.descriptors for fs in db_feature_sets], axis=0)
-        n_total = all_descs.shape[0]
-        annot_of_desc = _np.empty(n_total, dtype=_np.int32)
-        feat_of_desc = _np.empty(n_total, dtype=_np.int32)
-        offset = 0
-        for i, fs in enumerate(db_feature_sets):
-            n = len(fs)
-            annot_of_desc[offset : offset + n] = db_remap[i]
-            feat_of_desc[offset : offset + n] = _np.arange(n, dtype=_np.int32)
-            offset += n
-        db_feats = FeatureSet(
-            keypoints=_np.empty((n_total, 6), dtype=_np.float64),
-            descriptors=all_descs,
-        )
-        raw_dists, raw_labels = exact_knn(query_features, db_feats, k_total)
-    else:
-        backend = "pyflann" if hs.knn_backend == "flann" else "faiss"
-        global_index, _annot_of_desc_local, feat_of_desc = build_global_index(
-            db_feature_sets,
-            algorithm=hs.flann_algorithm,
-            trees=hs.flann_trees,
-            random_seed=hs.flann_random_seed,
-            backend=backend,
-        )
-        annot_of_desc = db_remap[_annot_of_desc_local]
-        n_total = annot_of_desc.shape[0]
-
-        raw_dists, raw_labels = query_index(
-            global_index,
-            query_features,
-            k_total,
-            checks=hs.flann_checks,
-            cores=hs.flann_cores,
-            backend=backend,
-        )
-
-    dlog.stage_global_index(db_feature_sets, annot_of_desc)
-    dlog.stage_raw_dists(raw_dists, raw_labels)
-
-    # Post-hoc distance normalisation (WBIA VEC_PSEUDO_MAX_DISTANCE_SQRD)
-    # WBIA divides raw SSE by 524288 inside NeighborIndex.knn() and traces
-    # the normalized (squared) distances. sqrt is applied later in
-    # weight_neighbors when sqrd_dist_on=False.
-    max_distance_sqrd = 2.0 * (512.0**2.0)
-    dists = (np.maximum(raw_dists, 0.0) / max_distance_sqrd).astype(np.float64)
-
-    if ctx is not None:
-        ctx.trace_neighbors(query_annot_index + 1, raw_labels, dists.astype(np.float32))
-
-    if not hs.sqrd_dist_on:
-        dists = np.sqrt(dists)
-    dlog.stage_dist_norm(dists)
-    labels = raw_labels.astype(np.int64)
-
-    n_qfxs = dists.shape[0]
-
-    voting_dists_all = dists[:, : k + kpad]  # [M, K+Kpad]
-    norm_dists = dists[:, k + kpad :]  # [M, Knorm]
-
-    voting_annot_all = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
-    voting_feat_all = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
-    for j in range(k + kpad):
-        col = labels[:, j]
-        valid = (col >= 0) & (col < n_total)
-        voting_annot_all[valid, j] = annot_of_desc[col[valid]]
-        voting_feat_all[valid, j] = feat_of_desc[col[valid]]
-
-    dlog.stage_voting_cols(dists, labels, annot_of_desc, k, kpad, query_annot_index)
-
-    # ---- 3. Baseline-neighbour filter (self + same-name + same-image) ----
-    # Mirrors WBIA's ``build_impossible_daids_list``: the query is removed
-    # from the index (self handled), and same-name / same-image ("contact")
-    # annotations are filtered from the voting columns when their respective
-    # ``can_match_*`` flag is False.
-    qann = database[query_annot_index]
-    qname = qann.name_uuid
-    if hs.can_match_samename or qname is None:
-        same_name_set: set[int] = set()
-    else:
-        same_name_set = {
-            i
-            for i, a in enumerate(database)
-            if i != query_annot_index and a.name_uuid == qname
-        }
-
-    qimg = qann.image_uuid
-    if hs.can_match_sameimg or qimg is None:
-        same_image_set: set[int] = set()
-    else:
-        same_image_set = {
-            i
-            for i, a in enumerate(database)
-            if i != query_annot_index and a.image_uuid == qimg
-        }
-
-    impossible_set = same_name_set | same_image_set
-
-    invalid = (voting_annot_all == query_annot_index) | np.isin(
-        voting_annot_all, list(impossible_set)
-    )  # [M, K], bool
-
-    dlog.stage_filter_counts(
-        dists, labels, annot_of_desc, k, kpad, query_annot_index, impossible_set
+    invalid, _impossible_set, qname = _baseline_filter(
+        ctx, query_annot_index, votes, dists, labels, knn, database, hs, k, kpad
+    )
+    normalizer_valid = (
+        _normalizer_validity(labels, knn, votes, database, k, kpad, qname)
+        if hs.normalizer_rule == "name"
+        else None
     )
 
-    if ctx is not None:
-        ctx.trace_baseline_filter(query_annot_index + 1, ~invalid)
+    matches, _lnbnn_weights = _build_matches(
+        ctx, query_annot_index, votes, database, hs, k, kpad, invalid, normalizer_valid
+    )
 
-    # ---- 3b. Name-normalizer validity (WBIA normalizer_rule='name') ----
-    normalizer_valid: np.ndarray | None = None
-    if hs.normalizer_rule == "name":
-        norm_col_labels = labels[:, -1]
-        norm_ok = (norm_col_labels >= 0) & (norm_col_labels < n_total)
-        norm_annots = np.full(n_qfxs, -1, dtype=np.int32)
-        norm_annots[norm_ok] = annot_of_desc[norm_col_labels[norm_ok]]
-        db_names = np.array([a.name_uuid for a in database], dtype=object)
-        norm_names = np.full(n_qfxs, None, dtype=object)
-        norm_names[norm_ok] = db_names[norm_annots[norm_ok]]
-        voting_names = np.full_like(voting_annot_all, None, dtype=object)
-        voting_ok = voting_annot_all >= 0
-        voting_names[voting_ok] = db_names[voting_annot_all[voting_ok]]
-        normalizer_valid = np.ones(n_qfxs, dtype=bool)
-        for j in range(1, k + kpad):  # skip col 0 = self-match
-            conflict = np.zeros(n_qfxs, dtype=bool)
-            vn = voting_names[:, j]
-            has_name = (norm_names != None) & (vn != None)  # noqa: E711
-            conflict[has_name] = norm_names[has_name] == vn[has_name]
-            normalizer_valid &= ~conflict
-        if qname is not None:
-            qname_conflict = np.zeros(n_qfxs, dtype=bool)
-            has_qn = norm_names != None  # noqa: E711
-            qname_conflict[has_qn] = norm_names[has_qn] == qname
-            normalizer_valid &= ~qname_conflict
-        normalizer_valid &= norm_ok
-
-    # ---- 4. FG weights ----
-    if hs.fg_on:
-        fg_weights = [per_feature_fg(ann) for ann in database]
-        q_fgw = fg_weights[query_annot_index]
-    else:
-        fg_weights = None
-        q_fgw = None
-
-    # ---- 5. WBIA filter chain → flat match list ----
-    matches: list[Match] = []
-    lnbnn_weights_list: list[float] = []
-    for qfx in range(n_qfxs):
-        if normalizer_valid is not None and not normalizer_valid[qfx]:
-            continue
-        for j in range(1, k + kpad):  # skip col 0 = self-match
-            vdist = float(
-                norm_dists[qfx, 0] if hs.normonly_on else voting_dists_all[qfx, j]
-            )
-            ndist = float(norm_dists[qfx, 0])
-            w = ndist - vdist
-            db_idx = int(voting_annot_all[qfx, j])
-            if db_idx < 0 or invalid[qfx, j]:
-                continue
-            dfx = int(voting_feat_all[qfx, j])
-            if dfx < 0:
-                continue
-
-            if hs.fg_on and q_fgw is not None:
-                w *= np.sqrt(float(q_fgw[qfx]) * float(fg_weights[db_idx][dfx]))
-
-            if hs.bar_l2_on:
-                w *= 1.0 - vdist
-
-            if hs.ratio_thresh is not None:
-                ratio = vdist / ndist if ndist > 0 else 1.0
-                if ratio > hs.ratio_thresh:
-                    continue
-                w *= 1.0 - ratio
-
-            if hs.const_on:
-                w *= 1.0
-
-            lnbnn_weights_list.append(w)
-            matches.append(
-                Match(
-                    qfx=qfx,
-                    daid=db_idx,
-                    dfx=dfx,
-                    dist=w,
-                    name_uuid=database[db_idx].name_uuid,
-                )
-            )
-
-    dlog.stage_lnbnn_weights(lnbnn_weights_list)
-
-    if ctx is not None:
-        ctx.trace_neighbor_weights(query_annot_index + 1, lnbnn_weights_list)
-
-    # ---- 6. Score ----
-    annot_uuids = [a.annot_uuid for a in database]
-    annot_name_map = {
-        a.annot_uuid: a.name_uuid for a in database if a.name_uuid is not None
-    }
-    qk: np.ndarray | None = query_features.keypoints if hs.rotation_invariance else None
-
-    _name_scores: dict[uuid.UUID, float] = {}
-    _wbia_methods = {"csum", "csum_wbia", "nsum", "nsum_wbia", "sumamech"}
-    if hs.score_method in _wbia_methods:
-        csum_annot, name_scores, canonical = score_matches_with_names(
-            matches, annot_uuids, annot_name_map, hs.score_method, qk
-        )
-        _name_scores = name_scores
-        scored = _wbia_scores_to_scoredmatches(
-            csum_annot, canonical, matches, database, annot_uuids
-        )
-        _annot_to_matches: dict[int, tuple[float, int]] = {}
-        for sm in scored:
-            daid = next(
-                i for i, a in enumerate(database) if a.annot_uuid == sm.annot_uuid
-            )
-            c = csum_annot.get(sm.annot_uuid, 0.0)
-            _annot_to_matches[daid] = (c, sm.num_matches)
-        dlog.stage_match_to_annot(_annot_to_matches)
-    else:
-        raise ValueError(f"Unknown score_method: {hs.score_method!r}")
+    scored, csum_annot, _name_scores, canonical = _score_matches(
+        matches, database, query_features, hs
+    )
 
     trace_ids = _trace_ids(database, query_annot_index)
     _emit_chipmatches(
@@ -492,136 +619,18 @@ def identify(
         trace_ids,
     )
 
-    # ---- 7. Spatial verification ----
-    _master_matches = matches
-    sv_results = {}
-    if hs.sv_on:
-        _prescored = scored
-        if hs.prescore_method != hs.score_method:
-            _prescored = _prescore_candidates(matches, database, hs.prescore_method)
-        if hs.sv_verify_all:
-            sver_candidates = list(_prescored)
-        else:
-            sver_candidates = make_sver_shortlist(
-                _prescored,
-                n_names=hs.sv_n_name_shortlist,
-                n_annots_per_name=hs.sv_n_annot_per_name,
-                score_method=hs.score_method,
-            )
-        dist_lookup: dict[tuple[int, int, int], float] = {}
-        for m in matches:
-            dist_lookup[(m.daid, m.qfx, m.dfx)] = m.dist
-        sver_candidates, sv_results = spatial_verify(
-            sver_candidates,
-            query_features,
+    scored, _master_matches, csum_annot, _name_scores, canonical = (
+        _run_spatial_verification(
+            scored,
+            matches,
             database,
-            min_inliers=4,
-            xy_thresh=hs.sv_xy_thresh,
-            scale_thresh=hs.sv_scale_thresh,
-            ori_thresh=hs.sv_ori_thresh,
-            use_chip_extent=hs.sv_use_chip_extent,
-            weight_inliers=hs.sv_weight_inliers,
-            sver_output_weighting=hs.sv_sver_output_weighting,
-            dist_lookup=dist_lookup,
+            query_features,
+            hs,
+            csum_annot,
+            _name_scores,
+            canonical,
         )
-
-        if sv_results:
-            match_lookup: dict[tuple[int, int, int], Match] = {}
-            for m in matches:
-                match_lookup[(m.daid, m.qfx, m.dfx)] = m
-
-            sv_matches: list[Match] = []
-            for annot_uuid, (
-                inlier_qfxs,
-                inlier_dfxs,
-                weights,
-            ) in sv_results.items():
-                daid = next(
-                    i for i, a in enumerate(database) if a.annot_uuid == annot_uuid
-                )
-                for qfx, dfx, w in zip(inlier_qfxs, inlier_dfxs, weights, strict=True):
-                    orig = match_lookup.get((daid, qfx, dfx))
-                    if orig is None:
-                        continue
-                    sv_w = float(w) if hs.sv_sver_output_weighting else 1.0
-                    sv_matches.append(
-                        Match(
-                            qfx=qfx,
-                            daid=daid,
-                            dfx=dfx,
-                            dist=orig.dist * sv_w,
-                            name_uuid=orig.name_uuid,
-                            sv_weight=sv_w,
-                        )
-                    )
-
-            annot_uuids = [a.annot_uuid for a in database]
-            annot_name_map = {
-                a.annot_uuid: a.name_uuid for a in database if a.name_uuid is not None
-            }
-            if hs.score_method in _wbia_methods:
-                qk = query_features.keypoints if hs.rotation_invariance else None
-                sv_csum, sv_name_scores, sv_canonical = score_matches_with_names(
-                    sv_matches, annot_uuids, annot_name_map, hs.score_method, qk
-                )
-                sv_scored = _wbia_scores_to_scoredmatches(
-                    sv_csum, sv_canonical, sv_matches, database, annot_uuids
-                )
-            else:
-                simple_score_method = (
-                    "csum" if hs.score_method == "nsum" else hs.score_method
-                )
-                sv_scored = score_matches(sv_matches, database, simple_score_method)
-                sv_name_scores = {}
-                sv_csum = {}
-                sv_canonical = {}
-
-            sv_annot_uuids = set(sv_results.keys())
-            sv_candidate_set = {c.annot_uuid for c in sver_candidates}
-
-            sv_inlier_info = {
-                sm.annot_uuid: (sm.sv_inliers, sm.sv_homography)
-                for sm in sver_candidates
-                if sm.sv_inliers > 0
-            }
-            sv_score_map = {sm.annot_uuid: sm for sm in sv_scored}
-            for sm in scored:
-                if sm.annot_uuid in sv_score_map:
-                    replaced = sv_score_map[sm.annot_uuid]
-                    inliers, H = sv_inlier_info.get(sm.annot_uuid, (0, None))
-                    sm.sv_inliers = inliers
-                    sm.sv_homography = H
-                    sm.score = replaced.score
-                    sm.num_matches = replaced.num_matches
-                    sm.correspondences = replaced.correspondences
-
-            # Update scoring dicts with SV-computed values for annotations
-            # that passed SV, so the post-SV and final traces reflect
-            # SV-filtered scores (matching WBIA behaviour).
-            for sm in scored:
-                au = sm.annot_uuid
-                if au in sv_annot_uuids:
-                    csum_annot[au] = sv_csum.get(au, csum_annot.get(au, 0.0))
-                    canonical[au] = sv_canonical.get(au, canonical.get(au, -np.inf))
-                nu = sm.name_uuid
-                if nu is not None and nu in sv_name_scores:
-                    _name_scores[nu] = sv_name_scores[nu]
-
-            # Mirror WBIA ``sv_prune_annots``: only SV-verified annotations
-            # survive. Annotations that were never SV candidates are dropped
-            # (WBIA does not include them in the post-SV / final lists).
-            _sv_rejected = sv_candidate_set - sv_annot_uuids
-            _non_candidates = {sm.annot_uuid for sm in scored} - sv_candidate_set
-            _keep = sv_annot_uuids
-            scored = [sm for sm in scored if sm.annot_uuid in _keep]
-
-            # Re-build the master match list for fm_list assembly:
-            # SV-verified annotations use only inlier matches; others
-            # keep the original pre-SV matches.
-            _sv_daid_set = {sm.daid for sm in sv_matches}
-            _master_matches: list[Match] = list(sv_matches) + [
-                m for m in matches if m.daid not in _sv_daid_set
-            ]
+    )
 
     _emit_chipmatches(
         ctx,

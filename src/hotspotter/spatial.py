@@ -15,7 +15,6 @@ where ``homog_xy_errors`` are squared reprojection errors (from vtool's
 
 from __future__ import annotations
 
-import importlib
 import uuid
 
 import numpy as np
@@ -73,12 +72,9 @@ def spatial_verify(
     """
     _ = ransac_thresh
     try:
-        sver = importlib.import_module("vtool.spatial_verification")
+        from hotspotter._vendor.sver import _spatial_verification as sver
     except ImportError as ex:  # pragma: no cover
-        raise ImportError(
-            "vtool is required for spatial verification. Install the vendored "
-            "wbia-vtool package or run inside the canonical Docker image."
-        ) from ex
+        raise ImportError("Spatial verification module not found.") from ex
 
     q_kp = query_features.keypoints
     sv_results: dict[uuid.UUID, tuple[list[int], list[int], np.ndarray]] = {}

@@ -144,11 +144,15 @@ class HotSpotterConfig(BaseModel):
     flann_algorithm: str = Field(default="kdtree")
     flann_trees: int = Field(
         default=4,
-        description="Number of kd-trees (WBIA default: 4).",
+        description="Number of kd-trees. WBIA nightly builds with 8 "
+        "(wildbook-ia Config.py:379 flann_cfg.trees=8); HS library default is 4. "
+        "Parity scripts pin both sides to 8 via --trees.",
     )
     flann_random_seed: int = Field(
         default=-1,
-        description="Random seed for FLANN index building (WBIA default: -1 = random).",
+        description="Random seed for FLANN index building. WBIA uses 42 "
+        "(core_annots.py:1616); HS library default -1. Parity scripts pin both "
+        "sides to 42 via --seed.",
     )
     flann_checks: int = Field(
         default=32,

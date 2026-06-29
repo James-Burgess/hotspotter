@@ -3,6 +3,17 @@
 Known gaps between `hotspotter` library output and WBIA oracle output.
 Findings from actual parquet-to-parquet comparison (latest run: 2026-06-26).
 
+> **[2026-06-27 update]** Re-ran with FLANN params **pinned to 8/42/32 on both
+> sides** (`compare_to_wbia.py --backends flann exact --trees 8 --seed 42 --checks 32`,
+> fresh nightly oracle `wildme-wbia-nightly-20260627-194032`). Fresh numbers:
+> final-name ρ **0.3608** (flann, was −0.1257), SV pruning agreement **0.74**
+> (flann) / **0.83** (exact), descriptor cosine still 1.0000, pre-SV Daid Jaccard
+> still 1.0000. The trees=4/seed=-1 assumption below is **wrong** — WBIA builds
+> trees=8/seed=42 (cache-path-proven). Remaining gap = pyflann/numpy version
+> variance + FLANN nondeterminism. Ground-truth at ATRW scale (107 queries):
+> **Top-1 tied 89.7%**, HS wins Top-5 (93.5% vs 91.6%) and Kaggle MAP@5 NaN→0
+> (0.915 vs 0.909). See `wbia-final-parity.md` for the full table.
+
 ## Run The Comparison
 
 ```bash

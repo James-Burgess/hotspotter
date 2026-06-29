@@ -1,0 +1,1 @@
+include src/hotspotter/_vendor/sver/_sver_cpp/*.so

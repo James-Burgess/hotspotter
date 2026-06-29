@@ -67,7 +67,7 @@ def build_global_index(
     algorithm: str = "kdtree",
     trees: int = 4,
     random_seed: int = 42,
-    backend: str = "pyflann",
+    backend: str = "faiss",
 ) -> tuple[FLANNIndex, np.ndarray, np.ndarray]:
     """Build a single index over all descriptors from *feature_sets*.
 
@@ -122,7 +122,7 @@ def query_index(
     k: int,
     checks: int = 1028,
     cores: int = 0,
-    backend: str = "pyflann",
+    backend: str = "faiss",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Search *index* for the *k* nearest neighbours of each query descriptor.
 

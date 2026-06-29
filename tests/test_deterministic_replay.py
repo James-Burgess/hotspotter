@@ -1,17 +1,15 @@
-"""Bit-exact replay of the recorded Hotspotter pipeline trace.
+"""Bit-exact replay of the committed Hotspotter golden trace.
 
 Hotspotter's ``exact`` KNN backend and deterministic Hessian-affine SIFT
-extraction make every pipeline stage reproducible run-to-run. These tests
-re-run :func:`identify` on the same batch that produced a golden trace and
-assert each recorded stage matches bit-for-bit, giving a regression net that
-screams if a refactor drifts any number.
+extraction make every pre-SV pipeline stage reproducible run-to-run. This test
+re-runs :func:`identify` on the committed reference batch and asserts each
+recorded stage matches the committed golden trace bit-for-bit — a regression
+net that screams if a refactor drifts any number.
 
-Fixtures are located via environment variables and skipped when absent, so the
-file is inert in the fast unit suite::
-
-    HS_TRACE_DIR   golden trace root (.../hs-atrw200-<ts>)
-    HS_BATCH_PATH  batch.json used to build the trace
-    HS_IMAGE_DIR   chip directory referenced by the batch
+The golden trace was generated from ``run_fixture.py`` on the 19-annot COCO
+zebra reference batch (3 queries). The trace is committed at
+``tests/assets/hs_golden_trace/``; the batch + images at
+``tests/assets/batch/``. No external mounts are needed.
 """
 
 from __future__ import annotations
@@ -27,6 +25,7 @@ import pytest
 
 pytestmark = pytest.mark.replay
 
+_ASSETS = Path(__file__).resolve().parent / "assets"
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
@@ -41,27 +40,18 @@ STAGES = (
     "neighbor_weights",
     "chipmatches_pre_sv",
 )
-
-
-def _trace_dir() -> Path:
-    return Path(os.environ.get("HS_TRACE_DIR", "/artifacts/hs-atrw200-20260627-165148"))
-
-
-def _batch_path() -> Path:
-    return Path(os.environ.get("HS_BATCH_PATH", "/batches/atrw200.json"))
-
-
-def _image_dir() -> Path:
-    return Path(os.environ.get("HS_IMAGE_DIR", "/batches/atrw200_images"))
+TRACE = _ASSETS / "hs_golden_trace"
+BATCH = _ASSETS / "batch" / "reference_batch.json"
+IMAGE_DIR = _ASSETS / "batch" / "images"
 
 
 def _skip_if_missing() -> None:
-    if not _trace_dir().is_dir():
-        pytest.skip(f"golden trace not found: {_trace_dir()}", allow_module_level=False)
-    if not _batch_path().is_file():
-        pytest.skip(f"batch not found: {_batch_path()}")
-    if not _image_dir().is_dir():
-        pytest.skip(f"images not found: {_image_dir()}")
+    if not TRACE.is_dir():
+        pytest.skip(f"golden trace missing: {TRACE}")
+    if not BATCH.is_file():
+        pytest.skip(f"batch missing: {BATCH}")
+    if not IMAGE_DIR.is_dir():
+        pytest.skip(f"images missing: {IMAGE_DIR}")
 
 
 def _parquet(trace: Path, stage: str, query_index: int) -> pd.DataFrame:
@@ -98,24 +88,33 @@ def _run_with_trace(database, qidx, trace_dir: Path) -> None:
 
 def _db_and_qidx():
     _skip_if_missing()
-    db, qidx, _ = build_database(load_batch(_batch_path()), _image_dir())
+    db, qidx, _ = build_database(load_batch(BATCH), IMAGE_DIR)
     return db, qidx
 
 
 @pytest.mark.slow
 class TestReplaysGoldenTrace:
-    """Re-run query 0 and diff every stage against the golden ATRW200 trace."""
+    """Re-run query 0 and diff every deterministic stage against the
+    committed golden trace from tests/assets/hs_golden_trace/."""
 
     def test_query0_stages_match(self, tmp_path):
         db, qidx = _db_and_qidx()
         _run_with_trace(db, qidx[0], tmp_path)
 
-        golden = _trace_dir()
+        golden_stages = [
+            s for s in STAGES if (TRACE / s / "default_000000.parquet").is_file()
+        ]
+        if not golden_stages:
+            pytest.skip(
+                f"golden trace at {TRACE} has no pre-SV stage parquets "
+                "(pruned to final_scores only) — cannot run bit-exact replay"
+            )
+
         compared = 0
         for stage in STAGES:
             try:
                 got = _arrays(tmp_path, stage, 0)
-                expected = _arrays(golden, stage, 0)
+                expected = _arrays(TRACE, stage, 0)
             except FileNotFoundError:
                 continue
             assert set(got) == set(

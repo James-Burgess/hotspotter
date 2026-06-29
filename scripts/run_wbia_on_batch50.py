@@ -125,6 +125,8 @@ def _record_one_image(
         "-e",
         "WBIA_TRACE_INSTALL_DEPS=1",
         "-e",
+        "WBIA_TRACE_LIGHT=1",
+        "-e",
         "WBIA_ORACLE_DB_DIR=/data/db",
         "--entrypoint",
         "/bin/bash",

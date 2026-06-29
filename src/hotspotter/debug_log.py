@@ -22,6 +22,7 @@ def _log(msg: str) -> None:
 
 SEP = "─" * 72
 THIN = "·" * 48
+SIFT_MAX_SQRT_DIST = 2.0 * (512.0**2.0)
 
 
 def _pct(count: int, total: int) -> str:
@@ -100,7 +101,7 @@ def stage_dist_norm(dists: np.ndarray) -> None:
         return
     _log("")
     _log("  {}".format(THIN))
-    _log("  STEP 4 — Distance Normalization  ( / 524288, sqrt )")
+    _log(f"  STEP 4 — Distance Normalization  ( / {int(SIFT_MAX_SQRT_DIST)}, sqrt )")
     _log("  {}".format(THIN))
     _log("  distances   {}".format(_stats(dists)))
 

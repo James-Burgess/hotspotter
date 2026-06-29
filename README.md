@@ -31,75 +31,86 @@ classification, embedding models, the IBEIS database, the job queue, or
 the web API. Those live in `wildlife-id` and `ml-service`.
 
 
-
 ## Module map
 
 | `wildbook-ia` | `hotspotter` |
 |---|---|
 | `wbia.algo.hots.chip_match` (3039 lines) | `hotspotter.data` (dataclasses) |
-| `wbia.algo.hots.pipeline` (1655 lines) | `hotspotter.pipeline.identify` (one function) |
-| `wbia.algo.hots.nn_weights` (669 lines) | Inlined filter chain in `pipeline.py` |
+| `wbia.algo.hots.pipeline` (1655 lines) | `hotspotter.pipeline.identify` |
+| `wbia.algo.hots.nn_weights` (669 lines) | `hotspotter.scoring` |
 | `wbia.algo.hots.name_scoring` (404 lines) | `hotspotter.name_scoring` |
-| `wbia.algo.hots.scoring` (177 lines) | `hotspotter.scoring` |
-| `wbia.algo.hots.neighbor_index` (1118 lines) | `hotspotter.knn` |
 | `wbia.algo/Config.py` (nested config) | `hotspotter.config` (Pydantic v2) |
+| `wbia.vtool.spatial_verification` | `hotspotter._vendor.sver` (stripped, utool-free) |
+| `pyhesaff._pyhesaff` (1054 lines) | `hotspotter._vendor.pyhesaff` (stripped, 140 lines) |
 
-What it does **not** replace: detection (YOLO/MegaDetector), classification, embedding extraction, the `IBEISController`, the depcache, the ZMQ job engine, or the `wbia_*` PostgreSQL schemas. Those belong to `ml-service` and `wildlife-id`.
 
 ## Design
 
 - **Stateless.** Pure functions over numpy arrays. No DB, no network, no `IBEISController`.
 - **Deterministic.** Same `(image, config)` → same features, every time.
 - **Package-first.** Target boundary is a reusable `hotspotter` library; sidecar/API code is transitional.
-- **Single global FLANN index** over database descriptors (query excluded), matching WBIA's `NeighborIndex` behaviour.
-- **Configurable filter chain.** LNBNN, bar_l2, ratio, FG, const, and normonly filters combine multiplicatively.
+- **Single global index** over database descriptors (query excluded), matching WBIA's `NeighborIndex` behaviour.
+- **Configurable filter chain.** LNBNN, bar_l2, ratio, FG, and normonly filters combine multiplicatively.
 - **Name-level scoring.** fmech (nsum), max-per-name (csum_wbia), per-name sum (sumamech), with canonical alignment.
 - **Spatial verification.** RANSAC homography with prescore shortlisting, xy/scale/ori threshold filtering.
+- **Zero utool dependency.** All vendored C++ extensions (sver, pyhesaff) are compiled directly; utool/ubelt/six eliminated from the runtime path.
 
 ## Architecture
 
 ```
 wbia-core/
-├── Dockerfile                         # Source-compiled submodule build
-├── Makefile                           # test, build, server, shell shortcuts
-├── pyproject.toml                     # numpy, pydantic, opencv, flask, pyflann
-├── sidecar/
-│   └── api.py                         # Flask — POST /api/v1/identify/
-├── scripts/entrypoints/
-│   ├── server-entrypoint.sh           # gunicorn entrypoint
-│   └── test-entrypoint.sh             # parity test entrypoint
+├── Dockerfile                         # Multi-stage: build (cmake/g++) → run (ubuntu:22.04)
+├── pyproject.toml                     # numpy, pydantic, opencv, scipy, faiss-cpu
 ├── src/hotspotter/
-│   ├── pipeline.py                    # identify() — full LNBNN + filters + SV
-│   ├── scoring.py                     # per_feature_fg, score_matches
-│   ├── name_scoring.py                # compute_fmech_score, align_name_scores_with_annots
+│   ├── pipeline.py                    # identify() — orchestrates the full pipeline
+│   ├── scoring.py                     # LNBNN weights, FG weights, match building
+│   ├── name_scoring.py                # fmech/nsum, csum, canonical alignment
 │   ├── spatial.py                     # spatial_verify, make_sver_shortlist
 │   ├── knn.py                         # build_global_index, query_index, exact_knn
-│   ├── features.py                    # extract_features() — pyhesaff only
+│   ├── features.py                    # extract_features() — vendored pyhesaff
+│   ├── chip.py                        # Chip extraction (mask, resize)
 │   ├── data.py                        # FeatureSet, AnnotatedImage, Match, ScoredMatch
 │   ├── config.py                      # HotSpotterConfig, IdentificationConfig (Pydantic v2)
-│   └── debug_log.py                   # Pipeline debug tracing (WBIA_CORE_DEBUG=1)
+│   ├── debug_log.py                   # Pipeline debug tracing (WBIA_CORE_DEBUG=1)
+│   ├── trace.py                       # Parquet trace writer for parity comparison
+│   └── _vendor/                       # Stripped, utool-free vendored C++ extensions
+│       ├── sver/                      # Spatial verification (from wbia-vtool, 6 files)
+│       │   ├── _spatial_verification.py
+│       │   ├── _sver_c_wrapper.py
+│       │   ├── _keypoint.py, _linalg.py, _distance.py, _util_math.py
+│       │   └── _sver_cpp/             # sver.cpp + compiled libsver.so
+│       └── pyhesaff/                  # Hessian-affine SIFT (3 files + libhesaff.so)
+│           ├── _pyhesaff.py
+│           ├── _ctypes_interface.py
+│           └── lib/                   # compiled libhesaff.so
 ├── tests/
+│   ├── assets/                        # Committed golden + silver trace fixtures
+│   ├── test_*.py                      # Unit + integration tests
 │   ├── benchmark/                     # COCO multi-target regression suite
-│   ├── replay/                        # Recorded WBIA fixture replay tests
-│   └── test_*.py                      # Unit + integration tests (38 total)
-├── docs/
-│   └── development/                   # Plans, contracts, devlog, parity analysis
-├── wbia-utool/                        # git submodule — pure Python utilities
-├── wbia-vtool/                        # git submodule — vision tools (libsver.so)
-└── wbia-tpl-pyhesaff/                 # git submodule — Hessian-affine SIFT (libhesaff.so)
+│   └── replay/                        # Recorded WBIA fixture replay tests
+├── scripts/                           # run_fixture.py, evaluate_groundtruth.py, etc.
+└── wbia-tpl-pyhesaff/                 # git submodule — C++ source only (Python stripped)
 ```
 
-## Submodules
+## Build
 
-Three WildMe packages are vendored as git submodules for source compilation:
+Multi-stage Docker. The build stage compiles two C++ extensions; the run
+stage copies only the `.so` files and Python venv into a slim
+`ubuntu:22.04` image.
 
-| Submodule | Path | Purpose |
+| Extension | Build method | Output |
 |---|---|---|
-| `wbia-utool` | `wbia-core/wbia-utool/` | Utility library (pure Python) |
-| `wbia-vtool` | `wbia-core/wbia-vtool/` | Vision tools + spatial verification (`libsver.so`) |
-| `wbia-tpl-pyhesaff` | `wbia-core/wbia-tpl-pyhesaff/` | Hessian-affine SIFT feature extraction (`libhesaff.so`) |
+| `libsver.so` | `g++ -shared -fPIC -O2 -fopenmp sver.cpp -lopencv_core` | `_vendor/sver/_sver_cpp/libsver.so` |
+| `libhesaff.so` | `cmake` (multi-file project from `wbia-tpl-pyhesaff`) | `_vendor/pyhesaff/lib/libhesaff.so` |
 
-They must be compiled from source against the target system's OpenCV. The Dockerfile handles this in dependency order: `wbia-utool → wbia-vtool → wbia-tpl-pyhesaff → wbia-core`.
+**Image size**: 2.15 GB (down from 9.08 GB pre-extraction). No CUDA,
+no cmake, no `-dev` headers in the runtime image.
+
+```bash
+make build        # docker build
+make test-unit    # run tests in container
+make shell        # interactive shell
+```
 
 
 ## Configuration
@@ -183,7 +194,6 @@ All pipeline parameters live in `HotSpotterConfig` (Pydantic v2 model). Override
 | `sv_ori_thresh` | 1.5708 | Max orientation delta in radians (WBIA: TAU/4) |
 | `sv_use_chip_extent` | `True` | Compute `dlen_sqrd2` from chip dimensions (W²+H²) like WBIA |
 | `sv_weight_inliers` | `True` | Bias RANSAC sampling toward high-FG features (WBIA `weight_inliers`). Does not multiply scores. |
-| `sv_use_kp_affine_inliers` | — | **Deprecated.** Survival is gated by `sver is None` (affine < 7); scoring always uses homography-refined inliers. |
 | `sv_sver_output_weighting` | `False` | Append homography-error weight per inlier and re-score. WBIA `sver_output_weighting`, defaults False. |
 
 ### Output
@@ -192,13 +202,46 @@ All pipeline parameters live in `HotSpotterConfig` (Pydantic v2 model). Override
 |---|---|---|
 | `num_return` | 10 | Maximum scored matches returned per query |
 
-## API
+### SIFT extraction
 
-The current high-level API is useful for parity work, but it is broader than the target `hotspotter` package boundary. Future cleanup should keep reusable feature/scoring primitives here and move service/index orchestration to `wildlife-id`.
+| Parameter | Default | Description |
+|---|---|---|
+| `scale` | `[1.0, 4.0, 8.0]` | Hessian-affine detection scales |
+| `ori_hist_bins` | 36 | Orientation histogram bins |
+| `ori_hist_threshold` | 0.8 | Orientation peak threshold (0.0–1.0) |
+
+
+## Config presets
+
+Common configurations for different use cases:
+
+| Preset | Key overrides | Use case |
+|---|---|---|
+| **Default** | `score_method="nsum"`, `sv_on=True`, `knn_backend="exact"` | Production, deterministic |
+| **WBIA parity** | `score_method="nsum_wbia"`, `knn_backend="flann"`, `flann_trees=8`, `flann_random_seed=42` | Bit-faithful WBIA comparison |
+| **No SV** | `sv_on=False` | Fast pre-SV scoring only |
+| **csum** | `score_method="csum"` | Cumulative sum scoring |
+| **Max SV** | `sv_verify_all=True`, `sv_n_annot_per_name=999` | Verify every candidate (WBIA default) |
+| **Shortlist SV** | `sv_verify_all=False`, `sv_n_annot_per_name=3` | WBIA literal Config.py default |
+
+Example:
+```python
+from hotspotter.config import IdentificationConfig
+config = IdentificationConfig(
+    hotspotter={
+        "score_method": "nsum_wbia",
+        "knn_backend": "flann",
+        "flann_trees": 8,
+    }
+)
+```
+
+
+## API
 
 ### `identify(query_index, database, config) → list[ScoredMatch]`
 
-Run the full identification pipeline for one query against a database of annotated images. Builds a single global FLANN index, applies LNBNN scoring with configurable filters, runs name-level aggregation, and optionally spatial verification.
+Run the full identification pipeline for one query against a database of annotated images. Builds a single global index, applies LNBNN scoring with configurable filters, runs name-level aggregation, and optionally spatial verification.
 
 ### Data containers
 
@@ -209,20 +252,27 @@ Run the full identification pipeline for one query against a database of annotat
 | `Match` | Single query-feature → database-feature correspondence |
 | `ScoredMatch` | Per-annotation result with score, correspondences, SV inliers |
 
-### Scoring functions
 
-| Function | WBIA equivalent |
-|---|---|
-| `score_matches(matches, db, method)` | `scoring.score_chipmatch_list` |
-| `compute_fmech_score(matches_by_name)` | `name_scoring.compute_fmech_score` |
-| `align_name_scores_with_annots(...)` | `name_scoring.align_name_scores_with_annots` |
-| `spatial_verify(matches, query_kp, db)` | `pipeline.spatial_verification` |
-| `make_sver_shortlist(scored, n, m)` | `scoring.make_chipmatch_shortlists` |
+## Testing
 
+Three-layer test net:
+
+| Layer | Test file | What it checks |
+|---|---|---|
+| **Unit** | `test_scoring.py`, `test_knn.py`, `test_spatial.py`, ... | Synthetic data, fast, isolated functions |
+| **Golden replay** | `test_deterministic_replay.py` | HS-vs-HS bit-exact pre-SV stages against committed golden trace |
+| **Silver parity** | `test_wbia_silver_parity.py` | HS-vs-WBIA final_scores decision parity (Top-1 daid agreement) |
+
+```bash
+make test-unit    # all unit tests
+make test-replay  # golden replay
+make test-parity  # silver parity
+```
 
 
 See `docs/development/`:
 - `deepseek-wbia-parity.md` - current notes about the work of achiving parity.
+- `dependency-stripping-plan.md` — how vtool/pyhesaff/utool were extracted and stripped
 - `hotspotter-transition.md` — current boundary checklist for the `hotspotter` rename and `wildlife-id` split
 - `parity-analysis.md` — investigation history + benchmark artifact analysis
 - `parity-roadmap.md` — implementation plan with verification results

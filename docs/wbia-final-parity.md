@@ -1,8 +1,52 @@
 # Deepseek — WBIA Parity Investigation
 
-> Last updated: 2026-06-27
+> Last updated: 2026-06-27 (parity re-run + ground-truth at scale)
 > Reference batch: 19 annots (COCO zebra)
 > COCO batch: 349 annots (30 queries, real individual IDs from GZGC dataset)
+
+## 2026-06-27 Authoritative update
+
+**Ground-truth at scale (ATRW, 107 queries, HS vs WBIA:nightly):**
+
+| System | Top-1 | Top-5 | mAP (NaN→0) | MAP@5 Kaggle (NaN→0) | valid |
+|---|---|---|---|---|---|
+| HS (exact, K4, SV on) | 89.7% | 93.5% | 0.846 | 0.915 | 104/107 |
+| WBIA:nightly (K2, FLANN) | 89.7% | 91.6% | 0.872 | 0.909 | 99/107 |
+
+Top-1 tied at 89.7%. HS wins Top-5 and answers 5 more queries (104 vs 99 valid).
+On the all-queries (NaN→0) basis HS edges WBIA on Kaggle MAP@5 (0.915 vs 0.909);
+excl-NaN, WBIA's per-query precision is higher (MAP@5 0.98 vs 0.94) because it
+ranks answerable queries more confidently but returns 8 zero-results vs HS's 3.
+Show both bases; lead with NaN→0 as the fair one (penalizes unanswered queries).
+
+**FLANN param correction (important):** WBIA nightly builds its kd-tree with
+**trees=8, seed=42** — confirmed via cache path `flann_FLANN((algo=kdtree,seed=42,t=8))`
+(`Config.py:379` `flann_cfg.trees=8`, `core_annots.py:1616` `random_seed=42`).
+The older note below claiming "WBIA default trees=4/seed=-1" is **wrong**. HS
+library defaults (`config.py`) are trees=4/seed=-1, a mismatch that inflated
+divergence. The parity scripts (`compare_to_wbia.py`, `record_wbia_oracle.py`,
+`patches/wbia_record_oracle_incontainer.py`) now **pin both sides** to
+trees=8/seed=42/checks=32 via `--trees/--seed/--checks`, and `compare_to_wbia.py`
+runs **both** flann + exact backends per invocation.
+
+**Fresh parity ρ (19-annot reference batch, params pinned 8/42/32, fresh nightly
+oracle `wildme-wbia-nightly-20260627-194032`):**
+
+| Metric | Stale (pre-pin) | Fresh (pinned) |
+|---|---|---|
+| Final name ρ (flann, gate) | −0.1257 | **0.3608** |
+| Final name ρ (exact) | 0.1132 | 0.3608 |
+| SV pruning agreement | 0.4762 | 0.74 (flann) / 0.83 (exact) |
+| Neighbor dist Pearson r | 0.9927 | ~0.64 (under investigation — comparer npy-path bug?) |
+
+Param pinning raised flann ρ from 0.2361 → 0.3608. Still FAIL vs the 0.97 gate;
+the residual is now cleanly attributable to **pyflann/numpy version variance
+between Docker images** + FLANN's irreducible nondeterminism (WBIA-vs-WBIA
+same-image name ρ ≈ 0.991 is the ceiling). WBIA-vs-WBIA variance is in the SV
+*candidate set* (Daid Jaccard 0.66–0.81), not the top ranking (name ρ 0.991) —
+i.e. nondeterministic *candidacy*, not nondeterministic *winners*.
+
+---
 
 ## Verdict
 
@@ -56,6 +100,12 @@ a deliberate backend choice.
 FLANN defaults now match WBIA (trees=4, checks=32, seed=-1, cores=1). The
 old HS defaults (trees=8, checks=800, seed=42) were running a 25× more
 thorough KNN than WBIA — the dominant cause of the 2× over-keep.
+
+> **[SUPERSEDED — see 2026-06-27 update at top.]** WBIA nightly actually builds
+> with **trees=8, seed=42** (not 4/-1 as assumed here — proven by the cache path
+> `flann_FLANN((algo=kdtree,seed=42,t=8))`, `Config.py:379`, `core_annots.py:1616`).
+> The parity scripts now pin both sides to 8/42/32. The checks=800-vs-32 over-keep
+> point IS correct (dominant cause of the 2× survivor inflation); that stands.
 
 ## All root causes (resolved)
 

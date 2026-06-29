@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import pyhesaff as _h
+from hotspotter._vendor.pyhesaff import get_hesaff_default_params, detect_feats_in_image
 import numpy as np
 
 from hotspotter.config import SiftConfig
@@ -32,6 +32,6 @@ def extract_features(
     """
     if image.ndim == 2:
         image = np.stack([image] * 3, axis=-1)
-    hesaff_kwargs = _to_hesaff_kwargs(config, _h.get_hesaff_default_params())
-    keypoints, descriptors = _h.detect_feats_in_image(image, **hesaff_kwargs)
+    hesaff_kwargs = _to_hesaff_kwargs(config, get_hesaff_default_params())
+    keypoints, descriptors = detect_feats_in_image(image, **hesaff_kwargs)
     return FeatureSet(keypoints=keypoints, descriptors=descriptors)

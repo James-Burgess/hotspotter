@@ -118,6 +118,31 @@ def average_precision(daids, query_identity, idmap):
     return ap / relevant_total
 
 
+def kaggle_ap5(daids, query_identity, idmap, k=5):
+    """Kaggle Humpback Whale Identification MAP@5 per-query AP@5.
+
+    Single-label, identity-deduped ranking. With exactly one relevant identity,
+    AP@5 = 1/r where r is the rank of the query's identity in the
+    deduplicated-by-identity ranking, if r <= k, else 0. This realises the
+    competition formula (sum_i precision@i * rel(i)) / min(k, #relevant)
+    with #relevant identities = 1. Caller passes NaN when the query has no
+    same-identity gallery match (detected via average_precision).
+    """
+    if query_identity is None:
+        return float("nan")
+    seen = set()
+    rank = 0
+    for d in daids:
+        cid = idmap.get(int(d))
+        if cid is None or cid in seen:
+            continue
+        seen.add(cid)
+        rank += 1
+        if cid == query_identity:
+            return 1.0 / rank if rank <= k else 0.0
+    return float("nan")  # query identity absent from gallery
+
+
 def top_k_hit(daids, query_identity, idmap, k):
     for d in daids[:k]:
         cand = idmap.get(int(d))
@@ -138,6 +163,7 @@ def evaluate(trace_dir: Path, batch_path: Path, config_label: str, ks=(1, 5)):
             continue
         daids = r["daids"]
         ap = average_precision(daids, qi, idmap)
+        map5 = float("nan") if np.isnan(ap) else kaggle_ap5(daids, qi, idmap)
         hits = {k: top_k_hit(daids, qi, idmap, k) for k in ks}
         # rank-1 daid + its identity (for the per-query table)
         rank1_daid = int(daids[0]) if len(daids) else -1
@@ -151,6 +177,7 @@ def evaluate(trace_dir: Path, batch_path: Path, config_label: str, ks=(1, 5)):
                 "top1": hits[1],
                 **{f"top{k}": hits[k] for k in ks if k != 1},
                 "ap": ap,
+                "map5": map5,
             }
         )
     return per_query
@@ -175,13 +202,31 @@ def fmt_report(label: str, per_query, ks=(1, 5)):
 
     top1 = np.mean([q["top1"] for q in per_query]) if n else float("nan")
     top5 = np.mean([q.get("top5", False) for q in per_query]) if n else float("nan")
-    aps = [q["ap"] for q in per_query if not np.isnan(q["ap"])]
-    mAP = np.mean(aps) if aps else float("nan")
+    aps_excl = [q["ap"] for q in per_query if not np.isnan(q["ap"])]
+    mAP_excl = np.mean(aps_excl) if aps_excl else float("nan")
+    aps_incl = [q["ap"] if not np.isnan(q["ap"]) else 0.0 for q in per_query]
+    mAP_incl = np.mean(aps_incl) if aps_incl else float("nan")
+    map5_vals = [q["map5"] for q in per_query if not np.isnan(q["map5"])]
+    MAP5 = np.mean(map5_vals) if map5_vals else float("nan")
+    map5_incl = [q["map5"] if not np.isnan(q["map5"]) else 0.0 for q in per_query]
+    MAP5_incl = np.mean(map5_incl) if map5_incl else float("nan")
     lines.append("-" * 60)
     lines.append(f"Top-1 accuracy: {top1*100:.1f}%")
     lines.append(f"Top-5 accuracy: {top5*100:.1f}%")
-    lines.append(f"mAP:            {mAP:.4f}  (n={len(aps)})")
-    return "\n".join(lines), {"top1": top1, "top5": top5, "mAP": mAP, "n": n}
+    lines.append(f"mAP (excl NaN):  {mAP_excl:.4f}  (n={len(aps_excl)})")
+    lines.append(f"mAP (NaN→0):     {mAP_incl:.4f}  (n={n}, NaN queries scored as 0)")
+    lines.append(f"MAP@5 (Kaggle):  {MAP5:.4f}  (n={len(map5_vals)}, identity-deduped)")
+    lines.append(f"MAP@5 (NaN→0):   {MAP5_incl:.4f}  (n={n}, all queries)")
+    return "\n".join(lines), {
+        "top1": top1,
+        "top5": top5,
+        "mAP_excl": mAP_excl,
+        "mAP_incl": mAP_incl,
+        "map5": MAP5,
+        "map5_incl": MAP5_incl,
+        "n": n,
+        "n_valid": len(aps_excl),
+    }
 
 
 def main(argv=None):
