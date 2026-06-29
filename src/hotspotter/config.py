@@ -131,7 +131,6 @@ class HotSpotterConfig(BaseModel):
     fg_on: bool = Field(default=True)
 
     bar_l2_on: bool = Field(default=False)
-    const_on: bool = Field(default=False)
 
     knn_backend: Literal["exact", "flann", "faiss"] = Field(
         default="exact",

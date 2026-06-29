@@ -22,7 +22,15 @@ from hotspotter.config import IdentificationConfig
 from hotspotter.data import AnnotatedImage, FeatureSet, Match, ScoredMatch
 from hotspotter.knn import build_global_index, exact_knn, query_index
 from hotspotter.name_scoring import score_matches_with_names
-from hotspotter.scoring import per_feature_fg, score_matches
+from hotspotter.scoring import (
+    apply_fg_weights,
+    baseline_filter,
+    build_matches,
+    compute_normalizer_validity,
+    per_feature_fg,
+    score_matches,
+    weight_neighbors_lnbnn,
+)
 from hotspotter.spatial import make_sver_shortlist, spatial_verify
 
 from hotspotter import debug_log as dlog
@@ -172,120 +180,78 @@ def _build_vote_columns(ctx, query_annot_index, dists, labels, knn, k, kpad):
     return VoteColumns(voting_dists, norm_dists, voting_annot, voting_feat)
 
 
-def _baseline_filter(
+def _score_and_build(
     ctx, query_annot_index, votes, dists, labels, knn, database, hs, k, kpad
 ):
-    qann = database[query_annot_index]
-    qname = qann.name_uuid
-    same_name_set = (
-        set()
-        if (hs.can_match_samename or qname is None)
-        else {
-            i
-            for i, a in enumerate(database)
-            if i != query_annot_index and a.name_uuid == qname
-        }
-    )
-    qimg = qann.image_uuid
-    same_image_set = (
-        set()
-        if (hs.can_match_sameimg or qimg is None)
-        else {
-            i
-            for i, a in enumerate(database)
-            if i != query_annot_index and a.image_uuid == qimg
-        }
-    )
-    impossible_set = same_name_set | same_image_set
-    invalid = (votes.voting_annot == query_annot_index) | np.isin(
-        votes.voting_annot, list(impossible_set)
+    """Run the scoring chain: filter → weight → fg → build matches.
+
+    Delegates all algorithmic logic to scoring.py; this function only
+    wires config, calls the scoring functions in order, and emits
+    trace/debug hooks between them.
+    """
+    invalid, impossible_set, qname = baseline_filter(
+        votes.voting_annot,
+        database,
+        query_annot_index,
+        can_match_samename=hs.can_match_samename,
+        can_match_sameimg=hs.can_match_sameimg,
     )
     dlog.stage_filter_counts(
         dists, labels, knn.annot_of_desc, k, kpad, query_annot_index, impossible_set
     )
     if ctx is not None:
         ctx.trace_baseline_filter(query_annot_index + 1, ~invalid)
-    return invalid, impossible_set, qname
 
+    normalizer_valid = None
+    if hs.normalizer_rule == "name":
+        normalizer_valid = compute_normalizer_validity(
+            votes.voting_annot,
+            labels,
+            knn.annot_of_desc,
+            knn.n_total,
+            database,
+            k,
+            kpad,
+            qname,
+        )
 
-def _normalizer_validity(labels, knn, votes, database, k, kpad, qname):
-    n_qfxs = labels.shape[0]
-    norm_col_labels = labels[:, -1]
-    norm_ok = (norm_col_labels >= 0) & (norm_col_labels < knn.n_total)
-    norm_annots = np.full(n_qfxs, -1, dtype=np.int32)
-    norm_annots[norm_ok] = knn.annot_of_desc[norm_col_labels[norm_ok]]
-    db_names = np.array([a.name_uuid for a in database], dtype=object)
-    norm_names = np.full(n_qfxs, None, dtype=object)
-    norm_names[norm_ok] = db_names[norm_annots[norm_ok]]
-    voting_names = np.full_like(votes.voting_annot, None, dtype=object)
-    voting_ok = votes.voting_annot >= 0
-    voting_names[voting_ok] = db_names[votes.voting_annot[voting_ok]]
-    normalizer_valid = np.ones(n_qfxs, dtype=bool)
-    for j in range(1, k + kpad):
-        conflict = np.zeros(n_qfxs, dtype=bool)
-        vn = voting_names[:, j]
-        has_name = (norm_names != None) & (vn != None)  # noqa: E711
-        conflict[has_name] = norm_names[has_name] == vn[has_name]
-        normalizer_valid &= ~conflict
-    if qname is not None:
-        qname_conflict = np.zeros(n_qfxs, dtype=bool)
-        has_qn = norm_names != None  # noqa: E711
-        qname_conflict[has_qn] = norm_names[has_qn] == qname
-        normalizer_valid &= ~qname_conflict
-    normalizer_valid &= norm_ok
-    return normalizer_valid
+    weights = weight_neighbors_lnbnn(
+        votes.voting_dists,
+        votes.norm_dists,
+        normonly_on=hs.normonly_on,
+        bar_l2_on=hs.bar_l2_on,
+        ratio_thresh=hs.ratio_thresh,
+        lnbnn_ratio=hs.lnbnn_ratio,
+    )
 
+    if hs.fg_on:
+        fg_weights = [per_feature_fg(ann) for ann in database]
+        weights = apply_fg_weights(
+            weights,
+            votes.voting_annot,
+            votes.voting_feat,
+            database,
+            query_annot_index,
+            fg_weights,
+        )
 
-def _build_matches(
-    ctx, query_annot_index, votes, database, hs, k, kpad, invalid, normalizer_valid
-):
-    fg_weights = [per_feature_fg(ann) for ann in database] if hs.fg_on else None
-    q_fgw = fg_weights[query_annot_index] if hs.fg_on else None
-    n_qfxs = votes.voting_dists.shape[0]
-    matches: list[Match] = []
-    lnbnn_weights: list[float] = []
-    for qfx in range(n_qfxs):
-        if normalizer_valid is not None and not normalizer_valid[qfx]:
-            continue
-        for j in range(1, k + kpad):
-            vdist = float(
-                votes.norm_dists[qfx, 0]
-                if hs.normonly_on
-                else votes.voting_dists[qfx, j]
-            )
-            ndist = float(votes.norm_dists[qfx, 0])
-            w = ndist - vdist
-            db_idx = int(votes.voting_annot[qfx, j])
-            if db_idx < 0 or invalid[qfx, j]:
-                continue
-            dfx = int(votes.voting_feat[qfx, j])
-            if dfx < 0:
-                continue
-            if hs.fg_on and q_fgw is not None:
-                w *= np.sqrt(float(q_fgw[qfx]) * float(fg_weights[db_idx][dfx]))
-            if hs.bar_l2_on:
-                w *= 1.0 - vdist
-            if hs.ratio_thresh is not None:
-                ratio = vdist / ndist if ndist > 0 else 1.0
-                if ratio > hs.ratio_thresh:
-                    continue
-                w *= 1.0 - ratio
-            if hs.const_on:
-                w *= 1.0
-            lnbnn_weights.append(w)
-            matches.append(
-                Match(
-                    qfx=qfx,
-                    daid=db_idx,
-                    dfx=dfx,
-                    dist=w,
-                    name_uuid=database[db_idx].name_uuid,
-                )
-            )
+    matches = build_matches(
+        weights,
+        votes.voting_annot,
+        votes.voting_feat,
+        invalid,
+        database,
+        k,
+        kpad,
+        normalizer_valid,
+    )
+
+    lnbnn_weights = [m.dist for m in matches]
     dlog.stage_lnbnn_weights(lnbnn_weights)
     if ctx is not None:
         ctx.trace_neighbor_weights(query_annot_index + 1, lnbnn_weights)
-    return matches, lnbnn_weights
+
+    return matches, qname
 
 
 def _score_matches(matches, database, query_features, hs):
@@ -589,17 +555,8 @@ def identify(
     dists, labels = _normalize_distances(ctx, query_annot_index, knn, hs)
     votes = _build_vote_columns(ctx, query_annot_index, dists, labels, knn, k, kpad)
 
-    invalid, _impossible_set, qname = _baseline_filter(
+    matches, qname = _score_and_build(
         ctx, query_annot_index, votes, dists, labels, knn, database, hs, k, kpad
-    )
-    normalizer_valid = (
-        _normalizer_validity(labels, knn, votes, database, k, kpad, qname)
-        if hs.normalizer_rule == "name"
-        else None
-    )
-
-    matches, _lnbnn_weights = _build_matches(
-        ctx, query_annot_index, votes, database, hs, k, kpad, invalid, normalizer_valid
     )
 
     scored, csum_annot, _name_scores, canonical = _score_matches(

@@ -35,19 +35,19 @@ import pandas as pd
 
 
 def _load_arr(row, col, run_dir):
-    """Resolve a parquet cell (ndarray / json-ref / npy-sidecar) to an ndarray."""
+    """Resolve a parquet cell (ndarray / json-ref / npz-sidecar) to an ndarray."""
     val = row[col]
     if isinstance(val, np.ndarray):
         return val
     parsed = json.loads(val) if isinstance(val, str) else val
     if isinstance(parsed, dict) and "npy_path" in parsed:
         npy = parsed["npy_path"]
-        # All paths in parquet cells are absolute as written by the trace
-        # writer's container.  Use only the filename and reconstruct the
-        # path relative to *run_dir* (the evaluator's mount may differ).
         fname = Path(npy).name
         full = run_dir / "final_scores" / "arrays" / fname
-        return np.load(str(full))
+        loaded = np.load(str(full))
+        if fname.endswith(".npz"):
+            return loaded[list(loaded.keys())[0]]
+        return loaded
     if isinstance(parsed, dict) and "values" in parsed:
         return np.array(parsed["values"])
     return np.array(parsed)

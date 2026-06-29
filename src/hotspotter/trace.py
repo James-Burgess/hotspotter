@@ -29,6 +29,26 @@ import numpy as np
 
 _ARRAY_INLINE_LIMIT = 64
 
+
+def _zstd_compress(src: Path, dst: Path) -> None:
+    import struct
+
+    import pyarrow as pa
+
+    raw = src.read_bytes()
+    dst.write_bytes(struct.pack("<I", len(raw)) + pa.compress(raw, codec="zstd"))
+
+
+def _zstd_decompress(src: Path) -> bytes:
+    import struct
+
+    import pyarrow as pa
+
+    raw = src.read_bytes()
+    size = struct.unpack("<I", raw[:4])[0]
+    return bytes(pa.decompress(raw[4:], codec="zstd", decompressed_size=size))
+
+
 # Module-level per-stage counters, matching WBIA's _COUNTERS dict.
 # Persists across TraceContext instances so that successive queries
 # in the same run get distinct array filenames.
@@ -117,8 +137,8 @@ class TraceContext:
         arrays_dir = self._stage_dir(stage) / "arrays"
         arrays_dir.mkdir(parents=True, exist_ok=True)
         safe_label = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in label)
-        path = arrays_dir / f"{counter:06d}_{safe_label}.npy"
-        np.save(str(path), arr)
+        path = arrays_dir / f"{counter:06d}_{safe_label}.npz"
+        np.savez_compressed(str(path), arr)
         out = self._array_summary(arr)
         out["npy_path"] = str(path)
         if arr.size <= _ARRAY_INLINE_LIMIT:
@@ -185,7 +205,7 @@ class TraceContext:
         path = self._stage_dir(stage) / f"{prefix}.parquet"
         import pandas as pd
 
-        pd.DataFrame(rows).to_parquet(path, index=False)
+        pd.DataFrame(rows).to_parquet(path, index=False, compression="zstd")
 
     def _save_arrays_sequence(
         self,
