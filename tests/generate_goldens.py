@@ -64,6 +64,7 @@ def generate_one(database, qidx, name: str, overrides: dict) -> None:
     trace_dir = OUTPUT / name
     if trace_dir.exists():
         shutil.rmtree(trace_dir)
+    trace_dir.mkdir(parents=True, exist_ok=True)
 
     os.environ["HOTSPOTTER_TRACE_DIR"] = str(trace_dir)
     os.environ["HOTSPOTTER_TRACE_RUN_ID"] = "golden"

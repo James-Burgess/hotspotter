@@ -1,5 +1,3 @@
-"""Tests for hotspotter.scoring (focused, no faiss needed)."""
-
 import uuid
 
 import numpy as np
@@ -7,14 +5,16 @@ import pytest
 
 from hotspotter.data import AnnotatedImage, FeatureSet
 from hotspotter.scoring import (
+    baseline_filter,
     build_matches,
-    filter_self_matches,
     score_matches,
     weight_neighbors_lnbnn,
 )
 
 
-def _make_annot(name_uuid: uuid.UUID | None, n_feats: int = 5) -> AnnotatedImage:
+def _make_annot(
+    name_uuid: uuid.UUID | None, n_feats: int = 5, image_uuid: uuid.UUID | None = None
+) -> AnnotatedImage:
     return AnnotatedImage(
         annot_uuid=uuid.uuid4(),
         name_uuid=name_uuid,
@@ -24,36 +24,28 @@ def _make_annot(name_uuid: uuid.UUID | None, n_feats: int = 5) -> AnnotatedImage
             descriptors=np.zeros((n_feats, 128), dtype=np.uint8),
         ),
         bbox=(0, 0, 50, 50),
+        image_uuid=image_uuid,
     )
 
 
-class TestFilterSelfMatches:
+class TestBaselineFilter:
     def test_removes_self(self):
         name = uuid.uuid4()
         ann = _make_annot(name)
         db = [ann]
-
-        distances = np.array([[0.0, 1.0], [0.0, 2.0]], dtype=np.float32)
-        labels = np.array([[0, 1], [0, 1]], dtype=np.int64)
-
-        d, l = filter_self_matches(distances, labels, db, 0)
-        # self (column 0) is set to inf/-1 but columns NOT re-sorted
-        assert np.isinf(d[0, 0])
-        assert l[0, 0] == -1
+        voting_annot = np.array([[0, 1]], dtype=np.int32)
+        invalid, _, _ = baseline_filter(voting_annot, db, 0)
+        assert invalid[0, 0]
 
     def test_removes_same_name(self):
         name = uuid.uuid4()
         ann1 = _make_annot(name)
         ann2 = _make_annot(name)
         db = [ann1, ann2]
-
-        distances = np.array([[0.5, 0.3]], dtype=np.float32)
-        labels = np.array([[0, 1]], dtype=np.int64)
-
-        d, l = filter_self_matches(distances, labels, db, 0)
-        assert l[0, 0] == -1  # ann1 is self
-        assert l[0, 1] == -1  # ann2 has same name
-        assert np.all(np.isinf(d[0]))
+        voting_annot = np.array([[0, 1]], dtype=np.int32)
+        invalid, _, _ = baseline_filter(voting_annot, db, 0, can_match_samename=False)
+        assert invalid[0, 0]  # self
+        assert invalid[0, 1]  # same name
 
     def test_different_name_kept(self):
         name_a = uuid.uuid4()
@@ -61,57 +53,96 @@ class TestFilterSelfMatches:
         ann1 = _make_annot(name_a)
         ann2 = _make_annot(name_b)
         db = [ann1, ann2]
+        voting_annot = np.array([[0, 1]], dtype=np.int32)
+        invalid, _, _ = baseline_filter(voting_annot, db, 0)
+        assert invalid[0, 0]  # self
+        assert not invalid[0, 1]  # different name
 
-        distances = np.array([[0.5, 0.3]], dtype=np.float32)
-        labels = np.array([[0, 1]], dtype=np.int64)
-
-        d, l = filter_self_matches(distances, labels, db, 0)
-        # Self (col 0) removed, other name (col 1) kept
-        assert l[0, 0] == -1
-        assert l[0, 1] == 1
-        assert np.isinf(d[0, 0])
-        assert not np.isinf(d[0, 1])
+    def test_same_image_excluded(self):
+        img = uuid.uuid4()
+        ann1 = _make_annot(uuid.uuid4(), image_uuid=img)
+        ann2 = _make_annot(uuid.uuid4(), image_uuid=img)
+        db = [ann1, ann2]
+        voting_annot = np.array([[0, 1]], dtype=np.int32)
+        invalid, _, _ = baseline_filter(voting_annot, db, 0, can_match_sameimg=False)
+        assert invalid[0, 0]  # self
+        assert invalid[0, 1]  # same image
 
 
 class TestWeightNeighborsLnbnn:
     def test_basic(self):
-        distances = np.array(
-            [[0.2, 0.4, 0.6, 0.8]], dtype=np.float32
-        )  # k=3, normalizer = col 3
-        labels = np.zeros((1, 4), dtype=np.int64)
-        w = weight_neighbors_lnbnn(distances, labels, k=3)
-        # WBIA formula: norm - nn_dist
+        voting = np.array([[0.2, 0.4, 0.6]], dtype=np.float64)
+        norm = np.array([[0.8]], dtype=np.float64)
+        w = weight_neighbors_lnbnn(voting, norm)
         assert np.allclose(w[0], [0.6, 0.4, 0.2])
 
     def test_ratio_clamp(self):
-        distances = np.array([[0.2, 0.9, 1.0, 1.0]], dtype=np.float32)
-        labels = np.zeros((1, 4), dtype=np.int64)
-        w = weight_neighbors_lnbnn(distances, labels, k=3, lnbnn_ratio=0.8)
+        voting = np.array([[0.2, 0.9, 1.0]], dtype=np.float64)
+        norm = np.array([[1.0]], dtype=np.float64)
+        w = weight_neighbors_lnbnn(voting, norm, lnbnn_ratio=0.8)
         assert w[0, 0] > 0
         assert w[0, 1] == pytest.approx(0)
         assert w[0, 2] == pytest.approx(0)
 
     def test_zero_dist(self):
-        distances = np.array([[0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
-        labels = np.zeros((1, 4), dtype=np.int64)
-        w = weight_neighbors_lnbnn(distances, labels, k=3)
-        # All identical: norm - nn = 0
+        voting = np.array([[0.0, 0.0, 0.0]], dtype=np.float64)
+        norm = np.array([[0.0]], dtype=np.float64)
+        w = weight_neighbors_lnbnn(voting, norm)
         assert np.allclose(w, 0.0)
+
+    def test_bar_l2(self):
+        voting = np.array([[0.2, 0.4]], dtype=np.float64)
+        norm = np.array([[0.8]], dtype=np.float64)
+        w = weight_neighbors_lnbnn(voting, norm, bar_l2_on=True)
+        assert w[0, 0] == pytest.approx(0.6 * 0.8)
+        assert w[0, 1] == pytest.approx(0.4 * 0.6)
+
+    def test_ratio_thresh(self):
+        voting = np.array([[0.2, 0.6]], dtype=np.float64)
+        norm = np.array([[0.5]], dtype=np.float64)
+        w = weight_neighbors_lnbnn(voting, norm, ratio_thresh=0.9)
+        assert w[0, 1] == pytest.approx(0.0)
+
+    def test_normonly(self):
+        voting = np.array([[0.2, 0.4]], dtype=np.float64)
+        norm = np.array([[0.8]], dtype=np.float64)
+        w = weight_neighbors_lnbnn(voting, norm, normonly_on=True)
+        assert np.allclose(w, 0.0)
+
+    def test_max_clamp(self):
+        voting = np.array([[1.5, 0.3]], dtype=np.float64)
+        norm = np.array([[1.0]], dtype=np.float64)
+        w = weight_neighbors_lnbnn(voting, norm)
+        assert w[0, 0] == pytest.approx(0.0)
+        assert w[0, 1] == pytest.approx(0.7)
 
 
 class TestBuildMatches:
     def test_basic(self):
         name = uuid.uuid4()
-        db = [_make_annot(name, n_feats=2)]
+        db = [_make_annot(name, n_feats=2), _make_annot(name, n_feats=2)]
+        weights = np.array([[0.0, 0.5]], dtype=np.float64)
+        voting_annot = np.array([[0, 1]], dtype=np.int32)
+        voting_feat = np.array([[0, 0]], dtype=np.int32)
+        invalid = np.zeros((1, 2), dtype=bool)
+        matches = build_matches(
+            weights, voting_annot, voting_feat, invalid, db, k=1, kpad=1
+        )
+        assert len(matches) == 1
+        assert matches[0].dfx == 0
 
-        weights = np.array([[0.5, 0.0], [0.3, 0.0]], dtype=np.float64)
-        labels = np.array([[0, 1], [0, 1]], dtype=np.int64)
-        # local_labels: each match points to feature index 0
-        local_labels = np.array([[0, 0], [0, 0]], dtype=np.int64)
-
-        matches = build_matches(weights, labels[:, :1], local_labels[:, :1], db)
+    def test_skips_column_zero(self):
+        name = uuid.uuid4()
+        db = [_make_annot(name, n_feats=3), _make_annot(name, n_feats=3)]
+        weights = np.array([[0.5, 0.3, 0.1]], dtype=np.float64)
+        voting_annot = np.array([[0, 0, 0]], dtype=np.int32)
+        voting_feat = np.array([[0, 1, 2]], dtype=np.int32)
+        invalid = np.zeros((1, 3), dtype=bool)
+        matches = build_matches(
+            weights, voting_annot, voting_feat, invalid, db, k=2, kpad=1
+        )
         assert len(matches) == 2
-        assert all(m.dfx == 0 for m in matches)
+        assert {m.dfx for m in matches} == {1, 2}
 
 
 class TestScoreMatches:
