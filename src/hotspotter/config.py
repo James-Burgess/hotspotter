@@ -179,11 +179,12 @@ class HotSpotterConfig(BaseModel):
         description="Threshold for lnbnn_normer (WBIA default: 0.5).",
     )
 
-    knn_backend: Literal["exact", "flann", "faiss"] = Field(
+    knn_backend: Literal["exact", "flann", "linear", "faiss"] = Field(
         default="exact",
         description=(
             "KNN backend: 'exact' (numpy L2, deterministic), "
             "'flann' (pyflann kdtree, approximate), "
+            "'linear' (pyflann brute-force, deterministic), "
             "'faiss' (faiss IndexFlatL2, deterministic). "
         ),
     )

@@ -104,9 +104,13 @@ def _filter_query_features(database, query_annot_index, hs):
     return filtered
 
 
-def _query_neighbors(database, query_features, hs, k_total):
-    db_feature_sets = [ann.features for ann in database]
-    db_remap = np.arange(len(database), dtype=np.int32)
+def _query_neighbors(database, query_annot_index, query_features, hs, k_total):
+    db_feature_sets = [
+        ann.features for i, ann in enumerate(database) if i != query_annot_index
+    ]
+    db_remap = np.array(
+        [i for i in range(len(database)) if i != query_annot_index], dtype=np.int32
+    )
     if hs.knn_backend == "exact":
         all_descs = np.concatenate([fs.descriptors for fs in db_feature_sets], axis=0)
         n_total = all_descs.shape[0]
@@ -124,10 +128,12 @@ def _query_neighbors(database, query_features, hs, k_total):
         )
         raw_dists, raw_labels = exact_knn(query_features, db_feats, k_total)
     else:
-        backend = "pyflann" if hs.knn_backend == "flann" else "faiss"
+        use_flann = hs.knn_backend in ("flann", "linear")
+        backend = "pyflann" if use_flann else "faiss"
+        algorithm = "linear" if hs.knn_backend == "linear" else hs.flann_algorithm
         global_index, annot_of_desc_local, feat_of_desc = build_global_index(
             db_feature_sets,
-            algorithm=hs.flann_algorithm,
+            algorithm=algorithm,
             trees=hs.flann_trees,
             random_seed=hs.flann_random_seed,
             backend=backend,
@@ -157,9 +163,7 @@ def _normalize_distances(ctx, query_annot_index, knn, hs):
     dists = (np.maximum(knn.raw_dists, 0.0) / max_distance_sqrd).astype(np.float64)
     if ctx is not None:
         ctx.trace_neighbors(
-            query_annot_index + 1,
-            knn.raw_labels[:, 1:],
-            dists[:, 1:].astype(np.float32),
+            query_annot_index + 1, knn.raw_labels, dists.astype(np.float32)
         )
     if not hs.sqrd_dist_on:
         dists = np.sqrt(dists)
@@ -169,12 +173,12 @@ def _normalize_distances(ctx, query_annot_index, knn, hs):
 
 def _build_vote_columns(ctx, query_annot_index, dists, labels, knn, k, kpad):
     n_qfxs = dists.shape[0]
-    voting_dists = dists[:, 1 : k + kpad + 1]
-    norm_dists = dists[:, k + kpad + 1 :]
+    voting_dists = dists[:, : k + kpad]
+    norm_dists = dists[:, k + kpad :]
     voting_annot = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
     voting_feat = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
     for j in range(k + kpad):
-        col = labels[:, j + 1]
+        col = labels[:, j]
         valid = (col >= 0) & (col < knn.n_total)
         voting_annot[valid, j] = knn.annot_of_desc[col[valid]]
         voting_feat[valid, j] = knn.feat_of_desc[col[valid]]
@@ -205,6 +209,9 @@ def _score_and_build(
         ctx.trace_baseline_filter(query_annot_index + 1, ~invalid)
 
     normalizer_valid = None
+    normk: np.ndarray | None = None
+    normks: np.ndarray | None = None
+
     if hs.normalizer_rule == "name":
         normalizer_valid = compute_normalizer_validity(
             votes.voting_annot,
@@ -216,6 +223,11 @@ def _score_and_build(
             kpad,
             qname,
         )
+        normk = np.full(labels.shape[0], 0, dtype=np.int32)
+        normks = normalizer_valid.copy()
+    elif hs.knorm > 0:
+        normk = np.full(labels.shape[0], hs.knorm - 1, dtype=np.int32)
+        normks = np.ones(labels.shape[0], dtype=bool)
 
     weights = weight_neighbors_lnbnn(
         votes.voting_dists,
@@ -227,6 +239,7 @@ def _score_and_build(
         cos_on=hs.cos_on,
         lograt_on=hs.lograt_on,
         const_on=hs.const_on,
+        normk=normk,
     )
 
     if hs.lnbnn_normer is not None and hs.lnbnn_norm_thresh:
@@ -252,6 +265,7 @@ def _score_and_build(
         k,
         kpad,
         normalizer_valid,
+        normks=normks,
     )
 
     lnbnn_weights = [m.dist for m in matches]
@@ -484,10 +498,10 @@ def _emit_final(
     uuid_to_daid, name_to_nid, qaid, qnid = trace_ids
     daids = np.array([uuid_to_daid[sm.annot_uuid] for sm in scored], dtype=np.int64)
     dnids = -daids.copy()
-    csum = np.array(
+    annot_csum = np.array(
         [float(csum_annot.get(sm.annot_uuid, 0.0)) for sm in scored], dtype=np.float64
     )
-    nsum = np.array(
+    per_annot_name_score = np.array(
         [
             (
                 float(name_scores.get(sm.name_uuid, 0.0))
@@ -505,9 +519,9 @@ def _emit_final(
         score_method=_trace_score_method(score_method),
         daid_list=daids,
         dnid_list=dnids,
-        annot_score_list=csum,
-        name_score_list=nsum,
-        score_list=nsum,
+        annot_score_list=annot_csum,
+        name_score_list=per_annot_name_score,
+        score_list=per_annot_name_score,
         fm_list=fm_list,
     )
 
@@ -559,10 +573,10 @@ def identify(
 
     k = hs.knn
     kpad = _compute_kpad(hs, query_annot_index, database)
-    k_total = k + kpad + hs.knorm + 1
+    k_total = k + kpad + hs.knorm
 
     query_features = _filter_query_features(database, query_annot_index, hs)
-    knn = _query_neighbors(database, query_features, hs, k_total)
+    knn = _query_neighbors(database, query_annot_index, query_features, hs, k_total)
 
     dists, labels = _normalize_distances(ctx, query_annot_index, knn, hs)
     votes = _build_vote_columns(ctx, query_annot_index, dists, labels, knn, k, kpad)

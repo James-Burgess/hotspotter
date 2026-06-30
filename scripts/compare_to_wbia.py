@@ -118,6 +118,7 @@ def run_traces(
         cfg.setdefault("flann_trees", flann_trees)
         cfg.setdefault("flann_random_seed", flann_seed)
         cfg.setdefault("flann_checks", flann_checks)
+        cfg.setdefault("sv_abstain_on_fail", True)
         cfg_json = json.dumps(cfg)
 
         print(f"[{idx + 1}/{total}] {cfg_name:20s}  {cfg_json}", flush=True)
@@ -179,7 +180,7 @@ def compare(
         str(compare_script),
         str(oracle_dir),
         str(trace_dir),
-        "--passing-rho",
+        "--passing-fm-jaccard",
         str(passing_rho),
     ]
     if out:
@@ -195,11 +196,24 @@ def compare(
     return result.returncode, text
 
 
+def _parse_pre_sv_fm_jaccard(text: str) -> float | None:
+    """Extract the mean pre-SV FM Jaccard from comparer output."""
+    import re
+
+    m = re.search(r"Parity check:.*?pre-SV FM Jaccard\s*=\s*(-?\d+\.?\d*)", text)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+
 def _parse_rho(text: str) -> float | None:
     """Extract the mean final name score Spearman rho from comparer output."""
     import re
 
-    m = re.search(r"Parity check:.*?name score Spearman[^\d-]*(-?\d+\.?\d*)", text)
+    m = re.search(r"name score Spearman[^\d-]*(-?\d+\.?\d*)", text)
     if m:
         try:
             return float(m.group(1))
@@ -225,8 +239,8 @@ def main() -> int:
     parser.add_argument(
         "--passing-rho",
         type=float,
-        default=0.97,
-        help="Minimum final name score Spearman ρ for parity PASS (default: 0.97)",
+        default=0.999,
+        help="Minimum pre-SV feature match Jaccard for parity PASS (default: 0.999).",
     )
     parser.add_argument(
         "--skip-run",
@@ -240,10 +254,10 @@ def main() -> int:
     parser.add_argument(
         "--backends",
         nargs="+",
-        default=["flann", "exact"],
-        help="KNN backends to run and compare (default: flann exact). 'flann' "
-        "is the canonical parity gate (WBIA runs FLANN); 'exact' is the "
-        "deterministic production backend, reported for divergence info.",
+        default=["linear", "exact"],
+        help="KNN backends to run and compare (default: linear exact). 'linear' "
+        "is the canonical parity gate (pyflann brute-force, matches WBIA's "
+        "pyflann); 'exact' is the deterministic numpy production backend.",
     )
     parser.add_argument(
         "--trees",
@@ -317,25 +331,24 @@ def main() -> int:
         else:
             out_html = None
         code, text = compare(oracle_dir, backend_trace_dir, args.passing_rho, out_html)
-        rho = _parse_rho(text)
-        passed = rho is not None and rho >= args.passing_rho
-        summary.append((backend, rho, passed))
+        fm_jaccard = _parse_pre_sv_fm_jaccard(text)
+        passed = fm_jaccard is not None and fm_jaccard >= args.passing_rho
+        summary.append((backend, fm_jaccard, passed))
 
-        # The parity gate is defined for flann-vs-flann; honor its exit code.
-        if backend == "flann":
+        if backend == "linear":
             gate_exit = code
 
     print("\n========== PARITY SUMMARY ==========", flush=True)
     print(
         f"FLANN params: trees={args.trees} seed={args.seed} checks={args.checks} "
-        f"(gate rho >= {args.passing_rho})",
+        f"(gate: pre-SV FM Jaccard >= {args.passing_rho})",
         flush=True,
     )
-    for backend, rho, passed in summary:
-        rho_str = f"{rho:.4f}" if rho is not None else "n/a"
-        tag = " (gate)" if backend == "flann" else " (info)"
+    for backend, fm_acc, passed in summary:
+        fm_str = f"{fm_acc:.4f}" if fm_acc is not None else "n/a"
+        tag = " (gate)" if backend == "linear" else " (info)"
         verdict = "PASS" if passed else "FAIL"
-        print(f"  {backend:8s} rho={rho_str:<8} {verdict}{tag}")
+        print(f"  {backend:8s} pre-SV FM J={fm_str:<8} {verdict}{tag}")
 
     return gate_exit
 

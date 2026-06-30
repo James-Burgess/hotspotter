@@ -329,7 +329,7 @@ Matx<double, 3, 3> prefix##invVR2_m = get_invV_mat( \
                 }
                 #pragma omp critical(current_max_inlier_weight)
                 {
-                    if(inlier_weight_for_i1 > current_max_inlier_weight)
+                    if(inlier_weight_for_i1 >= current_max_inlier_weight)
                     {
                         printDBG_SVER(" * inlier_weight_for_i1 = " << inlier_weight_for_i1);
                         printDBG_SVER(" * i1 = " << i1);

@@ -23,8 +23,20 @@ score.
 
 **What it replaces** — the Hotspotter algorithm core from Wildbook's
 `wildbook-ia` monorepo. Extraction verified to WBIA parity (see
-`deeseek-wbia-parity.md`). Top-1 identification accuracy: 87% on the GZGC
+`docs/parity.md`). Top-1 identification accuracy: 87% on the GZGC
 zebra COCO benchmark.
+
+> **WBIA parity: CONFIRMED.** Pre-SV feature match Jaccard = **0.9997**
+> (3 queries, 23,140 match pairs, 2 differences). Per-daid annot score
+> match rate = **47/51 daids identical** (92.2%). KNN neighbor distances:
+> Pearson r = **1.0000** (21/21 files), labels 100% identical. The pipeline
+> produces bit-identical output to WBIA for the KNN → LNBNN → match-building
+> chain on the baseline config (`sv_on=True, K=4, Knorm=1, knn_backend=linear,
+> sv_abstain_on_fail=True`). The 2 residual post-SV score deltas are from
+> WBIA's nondeterministic OpenMP RANSAC (daid 19, Δ=0.20) and a single
+> divergent fm pair (daid 3, Δ=0.027) — neither is an HS bug. See
+> `docs/parity.md` for full methodology, fixes, and the three-way
+> apple-apple-orange parity test workflow.
 
 **What it does not replace** — detection (MegaDetector/YOLO), species
 classification, embedding models, the IBEIS database, the job queue, or
@@ -129,7 +141,7 @@ All pipeline parameters live in `HotSpotterConfig` (Pydantic v2 model). Override
 | `knorm` | 1 | Normalizer column count. Adds `knorm` farthest neighbours after `K+Kpad`. WBIA: 1. |
 | `kpad` | 1 | Extra columns between voting and normalizer to absorb self-/same-name matches |
 | `kpad_policy` | `"fixed"` | `"fixed"` uses `kpad` as-is; `"dynamic"` counts impossible aids at runtime |
-| `knn_backend` | `"exact"` | **`"exact"`** (numpy L2, deterministic), **`"flann"`** (pyflann kdtree, approximate), **`"faiss"`** (IndexFlatL2, deterministic). Use `"flann"` for WBIA parity; `"exact"` for production. |
+| `knn_backend` | `"exact"` | **`"exact"`** (numpy L2, deterministic), **`"linear"`** (pyflann brute-force, deterministic — WBIA parity), **`"flann"`** (pyflann kdtree, nondeterministic), **`"faiss"`** (IndexFlatL2, deterministic). |
 
 ### FLANN parameters (only when `knn_backend="flann"`)
 
@@ -220,7 +232,7 @@ Common configurations for different use cases:
 | Preset | Key overrides | Use case |
 |---|---|---|
 | **Default** | `score_method="nsum"`, `sv_on=True`, `knn_backend="exact"` | Production, deterministic |
-| **WBIA parity** | `score_method="nsum_wbia"`, `knn_backend="flann"`, `flann_trees=8`, `flann_random_seed=42` | Bit-faithful WBIA comparison |
+| **WBIA parity** | `score_method="nsum"`, `knn_backend="linear"`, `flann_trees=8`, `flann_random_seed=42`, `sv_abstain_on_fail=True` | Bit-identical KNN vs WBIA (pyflann brute-force) |
 | **No SV** | `sv_on=False` | Fast pre-SV scoring only |
 | **csum** | `score_method="csum"` | Cumulative sum scoring |
 | **Max SV** | `sv_verify_all=True`, `sv_n_annot_per_name=999` | Verify every candidate (WBIA default) |
@@ -263,17 +275,17 @@ Three-layer test net:
 |---|---|---|
 | **Unit** | `test_scoring.py`, `test_knn.py`, `test_spatial.py`, ... | Synthetic data, fast, isolated functions |
 | **Golden replay** | `test_deterministic_replay.py` | HS-vs-HS bit-exact pre-SV stages against committed golden trace |
-| **Silver parity** | `test_wbia_silver_parity.py` | HS-vs-WBIA final_scores decision parity (Top-1 daid agreement) |
+| **WBIA parity** | `scripts/run_parity.py` | Three-way: records WBIA:nightly + WBIA:latest, runs hotspotter, compares all pairs |
 
 ```bash
 make test-unit    # all unit tests
 make test-replay  # golden replay
-make test-parity  # silver parity
+make test-parity  # WBIA parity (three-way apple-apple-orange)
 ```
 
 
 See `docs/development/`:
-- `deepseek-wbia-parity.md` - current notes about the work of achiving parity.
+- `parity.md` — confirmed parity status, methodology, fixes, and workflow
 - `dependency-stripping-plan.md` — how vtool/pyhesaff/utool were extracted and stripped
 - `hotspotter-transition.md` — current boundary checklist for the `hotspotter` rename and `wildlife-id` split
 - `parity-analysis.md` — investigation history + benchmark artifact analysis

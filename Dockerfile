@@ -28,7 +28,7 @@ WORKDIR /app
 
 # -- Compile sver (single-file g++) -------------------------------------------
 RUN cd src/hotspotter/_vendor/sver/_sver_cpp \
-    && g++ -shared -fPIC -O2 -fopenmp -ffast-math \
+    && g++ -shared -fPIC -O2 -ffast-math \
            -I/usr/include/opencv4 \
            sver.cpp -lopencv_core \
            -o libsver.so \
@@ -45,7 +45,11 @@ RUN cd wbia-tpl-pyhesaff \
 # -- Install pyflann from submodule --------------------------------------------
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=4.0.5.dev10
 RUN cd wbia-tpl-pyflann \
-    && pip3 install --no-cache-dir .
+    && pip3 install --no-cache-dir . \
+    && find "$VENV/lib/python3.10/site-packages/pyflann/lib" \
+         -name 'libflann.so.4.0.*' ! -name '*.a' -exec cp /app/vendor/libflann_wb.so {} \; \
+    && find "$VENV/lib/python3.10/site-packages/pyflann/lib" \
+         -name 'libflann.so*' ! -name '*.a' -exec cp /app/vendor/libflann_wb.so {} \;
 
 # -- Install Python deps + hotspotter itself into venv -------------------------
 RUN pip3 install --no-cache-dir \

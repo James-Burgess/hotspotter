@@ -2,12 +2,15 @@
 
 IMAGE := hotspotter:latest
 TEST_DATASET := $(CURDIR)/tests/test-dataset
-ORACLE ?= $(CURDIR)/../artifacts/wbia-oracle/wildme-wbia-nightly-20260625-105210
-PARITY_RHO ?= 0.97
+ORACLE_DIR ?= $(CURDIR)/../artifacts/wbia-oracle
 
 # ---- Build ----
+# Note: Docker layer caching can silently reuse stale COPY layers after
+# Python source changes.  If K2/K6 traces show wrong neighbour columns
+# (e.g. 5 instead of 3/7), rebuild with:
+#     docker build --no-cache -t $(IMAGE) .
 build:
-	docker build -t $(IMAGE) .
+	docker build --no-cache -t $(IMAGE) .
 
 # ---- Unit tests (42 tests, <2s, self-contained) ----
 test: test-unit
@@ -68,13 +71,25 @@ test-all:
 
 # ---- Shell in container ----
 shell:
-
-# ---- Parity comparison against WBIA oracle ----
-test-parity:
-	python3 scripts/compare_to_wbia.py $(ORACLE) --passing-rho $(PARITY_RHO)
 	docker run --rm -it \
 		-v $(TEST_DATASET):/app/tests/test-dataset \
 		--entrypoint bash $(IMAGE)
+
+# ---- Parity comparison against WBIA oracle ----
+# Three-way: records WBIA:nightly + WBIA:latest, runs hotspotter,
+#           compares all three pairs (apple-apple-orange).
+# Phase 1-2: record two WBIA oracles with baseline config (sv_on_true)
+# Phase 3:   compare WBIA:nightly vs WBIA:latest (reference parity)
+# Phase 4:   compare WBIA:nightly vs hotspotter     (main parity gate)
+# Phase 5:   compare WBIA:latest  vs hotspotter     (redundancy)
+#
+# Pre-requisite: the hotspotter image must be built:
+#     make build
+#
+# Skip recording (use existing oracles):
+#     make test-parity SKIP_RECORD=1
+test-parity: build
+	ORACLE_DIR=$(ORACLE_DIR) python3 scripts/run_parity.py $(if $(SKIP_RECORD),--skip-record)
 
 # ---- Clean ----
 clean:

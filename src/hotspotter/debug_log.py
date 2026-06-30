@@ -116,7 +116,7 @@ def stage_voting_cols(
 ) -> None:
     if not _enabled():
         return
-    voting = dists[:, 1 : k + kpad + 1]
+    voting = dists[:, : k + kpad]
     normer = dists[:, -1]
     _log("")
     _log(SEP)
@@ -129,7 +129,7 @@ def stage_voting_cols(
     for j in range(k + kpad):
         _log(
             "  col[{}]  valid={}/{} ({})".format(
-                j + 1,
+                j,
                 valid_cols[j],
                 dists.shape[0],
                 _pct(valid_cols[j], dists.shape[0]),
@@ -151,7 +151,7 @@ def stage_filter_counts(
     n_qfxs = dists.shape[0]
     voting_annot_all = np.full((n_qfxs, k + kpad), -1, dtype=np.int32)
     for j in range(k + kpad):
-        col = labels[:, j + 1]
+        col = labels[:, j]
         valid = (col >= 0) & (col < annot_of_desc.shape[0])
         voting_annot_all[valid, j] = annot_of_desc[col[valid]]
 
@@ -239,7 +239,7 @@ def _voting_counts(labels, annot_of_desc, k, kpad, query_idx):
     valid_cols = []
     annot_cols = []
     for j in range(k + kpad):
-        col = labels[:, j + 1]
+        col = labels[:, j]
         valid_mask = (col >= 0) & (col < n_total)
         valid_cols.append(int(valid_mask.sum()))
         annot_cols.append(annot_of_desc[col[valid_mask]])

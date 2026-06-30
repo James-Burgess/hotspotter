@@ -143,12 +143,18 @@ def weight_neighbors_lnbnn(
     cos_on: bool = False,
     lograt_on: bool = False,
     const_on: bool = False,
+    normk: np.ndarray | None = None,
 ) -> np.ndarray:
     """LNBNN weight computation with optional filter chain.
 
     Core formula (WBIA ``nn_weights.py``)::
 
         w = max(0, norm_dist - nn_dist)
+
+    The normalizer distance is selected per query feature — by default
+    the first normalizer column (index 0), but when *normk* is provided
+    each row selects its own column via ``norm_dists[row, normk[row]]``,
+    mirroring WBIA's ``vt.take_col_per_row(neighb_dist, neighb_normk)``.
 
     Optional modes applied in WBIA order:
     - ``cos_on``: convert L2 distances to soft cosine similarity via
@@ -173,11 +179,16 @@ def weight_neighbors_lnbnn(
         cos_on: apply cosine-similarity transform to distances.
         lograt_on: apply log transform to weights.
         const_on: replace all non-zero weights with 1.0.
+        normk: [N] int — per-feature normalizer column index.  When
+            None, ``norm_dists[:, 0]`` is used for all rows.
 
     Returns:
         [N, K+Kpad] float64 weight matrix.
     """
-    ndist = norm_dists[:, 0:1]
+    if normk is not None and len(normk) > 0:
+        ndist = norm_dists[np.arange(len(normk)), normk.astype(int)][:, None]
+    else:
+        ndist = norm_dists[:, 0:1]
     if normonly_on:
         vdist = np.tile(ndist, (1, voting_dists.shape[1]))
     else:
@@ -262,23 +273,34 @@ def build_matches(
     k: int,
     kpad: int,
     normalizer_valid: np.ndarray | None = None,
+    normks: np.ndarray | None = None,
 ) -> list[Match]:
     """Convert weighted vote columns into a flat list of Match objects.
 
-    Iterates columns 1..K+Kpad-1 (column 0 is skipped — WBIA parity
-    artifact from when the query was in its own index).  Entries with
-    zero or negative weight, invalid annotations, or invalid normalizer
-    are skipped.
+    All K+Kpad voting columns are processed (no self-match column exists
+    because the query is excluded from the index).  A match is accepted
+    when all of the following hold::
+
+        - db_idx ≥ 0 (valid annotation)
+        - ``invalid[qfx, j]`` is False (baseline filter)
+        - ``weights[qfx, j] > 0`` (positive LNBNN weight)
+        - ``normalizer_valid[qfx]`` (name-rule check, if provided)
+        - ``normks[qfx]`` (per-feature normalizer index finite, if provided)
+
+    This mirrors WBIA's ``build_chipmatches`` which applies
+    ``neighb_valid_agg = logical_and(neighb_valid0, filtvalids, filtnormks)``.
 
     Args:
-        weights: [N, K+Kpad] float64 from weight_neighbors_lnbnn.
+        weights: [N, K+Kpad] float64 from ``weight_neighbors_lnbnn``.
         voting_annot: [N, K+Kpad] int32 — annotation indices.
         voting_feat: [N, K+Kpad] int32 — feature indices.
         invalid: [N, K+Kpad] bool — True where match is self/same-name/same-image.
         database: annotations in index order.
-        k: number of voting neighbours.
+        k: number of KNN neighbours.
         kpad: padding columns.
-        normalizer_valid: [N] bool or None — name-rule normalizer mask.
+        normalizer_valid: [N] bool — name-rule normalizer mask.
+        normks: [N] bool — per-feature normalizer index finite
+            (``True`` = valid normalizer found for this feature).
 
     Returns:
         Flat list of Match objects (one per surviving feature correspondence).
@@ -287,6 +309,8 @@ def build_matches(
     matches: list[Match] = []
     for qfx in range(n_qfxs):
         if normalizer_valid is not None and not normalizer_valid[qfx]:
+            continue
+        if normks is not None and not normks[qfx]:
             continue
         for j in range(k + kpad):
             db_idx = int(voting_annot[qfx, j])

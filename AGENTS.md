@@ -5,6 +5,12 @@ via oracle testing against `../artifacts/wbia-oracle/`.
 
 **YOU HAVE TO RUN THE CODE IN THE DOCKER FILE. THERE ARE CRAZY DEPS SO RUN EVERYTHING IN DOCKER!**
 
+
+There is extensive documentation about the project in ./docs 
+A devlog exists to update with current status of the project when milestones are hit.
+READING THE DOCS WILL HELP WITH ASSUMPTIONS AND RED HERRINGS!
+
+
 ## Quick commands
 
 ```bash
@@ -46,6 +52,5 @@ wbia-core/
 ../scripts/compare_wbia_oracles.py      # Compares two trace dumps, emits HTML/terminal
 ```
 
-## Parity investigation → `deeseek-wbia-parity.md`
 
 

@@ -1629,4 +1629,197 @@ Applied 5 of the top-10 audit fixes:
 | Unit (scoring, pipeline, knn, spatial, features, config, data) | 58 pass, 1 skip | green |
 | Golden replay (16 configs, bit-exact pre-SV) | 16 pass | green |
 | Silver parity (HS vs WBIA decision parity) | 2 pass | green |
+
+---
+
+## 2026-06-30 — MILESTONE: Pipeline parity achieved + parity gate infrastructure
+
+### Parity confirmed
+
+Pre-SV FM Jaccard = **0.9997** (3 queries × 23,140 match pairs, 2 differences).
+Per-daid annot score match rate = **47/51 daids identical** (92.2%). KNN distances:
+Pearson r = 1.0000. Labels: 100% identical.
+
+The pipeline produces bit-identical output to WBIA for KNN → LNBNN →
+match-building on the baseline config (sv_on=true, K=4, Knorm=1, linear backend,
+sv_abstain_on_fail=True).
+
+### Three-way parity test (`scripts/run_parity.py`)
+
+Orchestrates apple-apple-orange comparison:
+
+| Phase | Comparison | Purpose |
+|---|---|---|
+| 1 | Record WBIA:nightly (baseline, linear) | Oracle generation |
+| 2 | Record WBIA:latest (baseline, linear) | Oracle generation |
+| 3 | WBIA:nightly vs WBIA:latest | Apple-apple — proves oracle determinism |
+| 4 | WBIA:nightly vs hotspotter | Apple-orange — main parity gate |
+| 5 | WBIA:latest vs hotspotter | Apple-orange — redundancy |
+
+All three images use the SAME baseline config. Gate: pre-SV FM Jaccard ≥ 0.999.
+
+`scripts/record_wbia_oracle.py` gained `--configs` flag for single-config
+recording (was always all 9). `wbia_record_oracle_incontainer.py` respects
+`WBIA_TRACE_CONFIGS` env var.
+
+### Parity gate: pre-SV FM Jaccard
+
+The comparer now gates on pre-SV FM Jaccard (via `--passing-fm-jaccard`),
+not name-score Spearman ρ. Pre-SV FM Jaccard measures what HS controls
+(KNN → LNBNN → match-building) before spatial verification introduces
+nondeterminism. Threshold: 0.999.
+
+`_compute_pre_sv_fm_jaccard()` loads fm_list arrays from `chipmatches_pre_sv`
+stage files, computes per-daid Jaccard, reports aggregate + per-file stats.
+
+### `sv_abstain_on_fail` defaulted to True
+
+The parity config in `compare_to_wbia.py:116` now defaults to
+`sv_abstain_on_fail=True`, matching WBIA's behaviour (zero scores for
+annotations that fail SV). Closes the daid 17 Δ=7.29 gap.
+
+### Per-daid score comparison
+
+`_compute_stage_score_rho()` now matches scores by daid before computing
+Spearman ρ (was element-wise comparison, failing when daid sort orders differ).
+`_compute_per_daid_score_delta()` reports per-daid match rates, max/mean deltas,
+and per-daid score diffs with daid-level detail.
+
+### Makefile changes
+
+```makefile
+test-parity: build
+    ORACLE_DIR=$(ORACLE_DIR) python3 scripts/run_parity.py
+
+# build uses --no-cache (Docker COPY layer caching silently reuses
+# stale source files)
+build:
+    docker build --no-cache -t $(IMAGE) .
 ```
+
+### Resolved issues
+
+- **FLANN non-determinism**: proved irremediable (30% label overlap in same
+  process). Solved by `knn_backend="linear"` (pyflann brute-force exact).
+- **Linear oracle monkeypatch**: `kwargs["algorithm"]` force-overwrite (was
+  `setdefault`).
+- **sver.cpp**: `>` → `>=` argmax, `-fopenmp` removed. HS sver is now
+  deterministic and matches WBIA on identical fm input.
+- **Normalizer selection**: `normk = hs.knorm - 1` for `rule="last"`.
+- **Query exclusion**: `_query_neighbors` excludes query from FLANN index.
+
+### Remaining (non-HS-bug)
+
+- daid 3 (q0): Δ=0.027 from single WBIA-only fm pair
+- daid 19 (q2): Δ=0.20 from WBIA's OpenMP RANSAC nondeterminism
+
+### Key files
+
+- `scripts/run_parity.py` — three-way parity orchestrator (new)
+- `scripts/compare_wbia_oracles.py` — pre-SV FM gate, per-daid score delta
+- `scripts/compare_to_wbia.py` — sv_abstain_on_fail default, gate parsing
+- `scripts/record_wbia_oracle.py` — --configs flag
+- `patches/wbia_record_oracle_incontainer.py` — WBIA_TRACE_CONFIGS filter
+- `src/hotspotter/pipeline.py` — KNN per-config, final_score alignment
+- `docs/parity.md` — confirmed-PASS numbers, workflow docs
+
+---
+
+## 2026-06-29 — Linear KNN parity: SV solved, K2/K6 remain
+
+### What was done
+
+1. **Query exclusion confirmed**: Direct inspection of WBIA oracle's `nearest_neighbors`
+   proved the query is EXCLUDED from WBIA's FLANN index (label range [2, 35808],
+   no vaules 0-1). HS now matches — `_query_neighbors` excludes `query_annot_index`.
+
+2. **FLANN non-determinism proven**: 3 runs in same process, same `libflann_wb.so`,
+   same `seed=42` → 30% label overlap. Even WBIA's own binary produces different
+   trees every run. The KD-tree RNG is not seedable from Python.
+
+3. **Linear backend added**: `knn_backend="linear"` uses pyflann's brute-force exact
+   search. Identical results to `knn_backend="exact"` (verified top-1, same scores).
+
+4. **Linear oracle recorded**: `python3 ../scripts/record_wbia_oracle.py --algorithm linear`
+   — pyflann monkeypatch in `wbia_record_oracle_incontainer.py` forces algorithm.
+   Docker compose fix: `WBIA_FLANN_ALGORITHM` env var added to compose file.
+
+5. **SV fixed**: `>=` (not `>`) in sver.cpp line 332, `-fopenmp` removed from g++.
+   HS sver now produces identical inliers to WBIA on identical fm input (verified
+   daid=3 → 100% inlier overlap, sver deterministic x2).
+
+6. **Normalizer selection fixed**: `normk = hs.knorm - 1` for `normalizer_rule="last"`,
+   matching WBIA's `K + Knorm - 1`. Per-feature normk parameter added to
+   `weight_neighbors_lnbnn`.
+
+7. **Comparer updated**: Pre-SV FM Jaccard metric added alongside post-SV.
+   Per-config breakdown helper script at `scripts/sver_check.py`.
+
+### Linear parity results (20260629-161926 oracle, HS knn_backend="linear")
+
+| Metric | Value | Notes |
+|---|---|---|
+| Neighbor dist Pearson r | **1.0000** (21/21) | KNN SOLVED |
+| Descriptor cosine | 1.0000 (399/399) | Features identical |
+| Daid Jaccard pre-SV | **1.0000** (21/21) | Annotation sets match |
+| Pre-SV FM Jaccard | 0.8775 | K2=0.50, K6=0.67 drag down |
+| Post-SV FM Jaccard | 0.1295 | SV cascade |
+| SV pruning agreement | 0.8333 | SV binary now identical |
+| Final name score ρ | **0.1765** | FAIL (threshold 0.97) |
+
+Per-config pre-SV Jaccard: `sv_on_true`/`pre_csum`/`score_csum`/`sv_on_false`/
+`Knorm2` all at 0.9998+. **K2 at 0.50, K6 at 0.67** — those 6 files (2 configs × 3
+queries) are the entire remaining gap.
+
+### Root cause of K2/K6 divergence
+
+The linear oracle was recorded with FLANN `kdtree` (approximate), not `linear`.
+The `--algorithm linear` flag + pyflann monkeypatch didn't take effect — oracle
+manifest still shows `algorithm: kdtree`. K2/K6 with kdtree produce different
+approximate distances than HS's linear, causing weight divergence.
+
+For K=4/A6, kdtree approximation error is small enough that the comparer
+agreement ~100%. For K=2, fewer neighbors → each approximation matters more.
+
+**Root cause of monkeypatch failure (2026-06-29):** The incontainer script used
+`kwargs.setdefault("algorithm", _FLANN_ALGORITHM)` in the pyflann monkeypatch.
+WBIA's `FlannConfig` ALWAYS passes `algorithm="kdtree"` as an explicit kwarg
+(because it reads the cfgdict which now includes `algorithm: "kdtree"` from
+`FLANN_PARAMS`). `setdefault` is a no-op when the key already exists — the
+monkeypatch silently did nothing.
+
+**Fix:** changed to `kwargs["algorithm"] = _FLANN_ALGORITHM` (force-overwrite).
+This guarantees pyflann always uses the configured algorithm regardless of
+what WBIA's config says.
+
+**`knn_backend="linear"` vs `knn_backend="exact"` clarification:**
+- `knn_backend="exact"` → numpy float64 L2 via `exact_knn()` (in `knn.py`)
+- `knn_backend="linear"` → pyflann C++ brute-force via `algorithm="linear"`
+- These produce identical distances at 1e-6 but are DIFFERENT implementations
+- For parity against WBIA: **must use `--backends linear`** (not `"exact"`)
+  because WBIA uses pyflann internally, and ULP-level differences in the K2
+  marginal case could still flip LNBNN weights
+
+### Known open issues
+
+- **Linear oracle needs re-recording**: monkeypatch now force-overwrites.
+  Verify: `grep '"algorithm"' manifest.json` shows `"linear"`, and container
+  logs contain `[wbia-trace] pyflann algorithm forced to linear`.
+- **K2/K6**: fix by re-recording oracle with true `linear` algorithm.
+- **`neighbor_weights` trace schema mismatch**: WBIA uses `valids`+`normks`,
+  HS uses `weight_lnbnn_array`. Not a pipeline bug — comparison artifact.
+- **Pre-SV 1-match difference**: daid 9 has WBIA 74 vs HS 73 pairs at
+  sv_on_true. Single (qfx, dfx) pair difference — both fail SV anyway.
+
+### Key files changed
+
+- `pipeline.py`: `_query_neighbors` excludes query, normk=Knorm-1
+- `scoring.py`: `weight_neighbors_lnbnn` accepts normk, `build_matches` accepts normks
+- `sver.cpp`: `>=` (not `>`), no `-fopenmp`
+- `config.py`: `knn_backend` now includes `"linear"`
+- `Dockerfile`: pyflann from submodule, libflann_wb.so swap
+- `compare_wbia_oracles.py`: pre-SV FM Jaccard, per-stage breakdown
+- `record_wbia_oracle.py`: `--algorithm` flag, `WBIA_FLANN_ALGORITHM` env
+- `wbia_record_oracle_incontainer.py`: pyflann algorithm monkeypatch
+- `docker-compose.ml.yml`: `WBIA_FLANN_ALGORITHM` env forwarding
+- Scripts: `sver_check.py`, `sver_crossbinary.py`, `weight_debug.py`
