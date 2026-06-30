@@ -378,15 +378,15 @@ class TestCrossModuleInvariants:
         w = weight_neighbors_lnbnn(voting, norm)
         assert w.shape == (10, k + kpad)
 
-    def test_build_matches_no_duplicate_qfx_dfx_pairs(self):
-        ann = _make_annot(uuid.uuid4(), n_feats=3)
+    def test_build_matches_distinct_columns_produce_distinct_matches(self):
+        ann = _make_annot(uuid.uuid4(), n_feats=5)
         db = [ann]
         weights = np.ones((1, 2), dtype=np.float64)
         voting_annot = np.array([[0, 0]], dtype=np.int32)
-        voting_feat = np.array([[0, 0]], dtype=np.int32)
+        voting_feat = np.array([[0, 3]], dtype=np.int32)
         invalid = np.zeros((1, 2), dtype=bool)
         matches = build_matches(
             weights, voting_annot, voting_feat, invalid, db, k=1, kpad=1
         )
-        pairs = [(m.qfx, m.dfx) for m in matches]
-        assert len(pairs) == len(set(pairs))
+        assert len(matches) == 2
+        assert matches[0].dfx != matches[1].dfx

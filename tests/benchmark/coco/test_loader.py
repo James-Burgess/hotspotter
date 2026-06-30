@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from tests.benchmark.coco.loader import CocoLoader
 
 COCO_JSON = Path("tests/test-dataset/annotations/instances_train2020.json")
@@ -9,6 +11,11 @@ IMAGE_DIR = Path("tests/test-dataset/images")
 
 _TOTAL_ANNOTS = 19
 _VALID_INDIVIDUALS = 3
+
+pytestmark = pytest.mark.skipif(
+    not COCO_JSON.exists() or not IMAGE_DIR.exists(),
+    reason="benchmark COCO fixture dataset is not present",
+)
 
 
 class TestCocoLoader:
