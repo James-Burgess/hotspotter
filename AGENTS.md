@@ -10,6 +10,19 @@ There is extensive documentation about the project in ./docs
 A devlog exists to update with current status of the project when milestones are hit.
 READING THE DOCS WILL HELP WITH ASSUMPTIONS AND RED HERRINGS!
 
+Use the devlog helper instead of hand-scanning/editing the log when possible:
+
+```bash
+python scripts/devlog.py latest --line
+python scripts/devlog.py query parity
+python scripts/devlog.py query --date 2026-06-30 parity
+python scripts/devlog.py submit --title "Milestone title" --summary "..." --done "..." --verify "make test-unit"
+python scripts/devlog.py submit --title "Long entry" --body notes.md
+```
+
+The helper targets `docs/development/devlog.md`, parses dated `## YYYY-MM-DD — title`
+entries, and prepends new entries after the intro separator.
+
 
 ## Quick commands
 
@@ -51,6 +64,5 @@ wbia-core/
 
 ../scripts/compare_wbia_oracles.py      # Compares two trace dumps, emits HTML/terminal
 ```
-
 
 

@@ -5,6 +5,21 @@ package evolves.  It complements the formal ADRs in `decisions/`.
 
 ---
 
+## 2026-06-30 — Unit test coverage expansion — 268 tests (+98)
+### Summary
+
+Filled major test coverage gaps: chip.py (0%→100%), trace.py (0%→100%), compute_normalizer_validity, _filter_query_features, and property-based invariants for scoring/name_scoring.
+### What was done
+
+1. 4 new test files: test_chip.py (18 tests), test_trace.py (28 tests), test_properties.py (24 tests), +7 tests added to test_scoring.py. Covers affine matrix math, zstd serialization, env-var gating, LNBNN invariants, baseline_filter invariants, feature filtering edge cases, and name-based normalizer validation.
+### Verification
+
+```bash
+make test-unit
+```
+
+---
+
 ## 2026-06-26 — Phase 2: scoring labels, nsum default, chip-size verification
 
 ### What was done

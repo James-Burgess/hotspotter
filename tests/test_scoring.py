@@ -7,6 +7,7 @@ from hotspotter.data import AnnotatedImage, FeatureSet
 from hotspotter.scoring import (
     baseline_filter,
     build_matches,
+    compute_normalizer_validity,
     score_matches,
     weight_neighbors_lnbnn,
 )
@@ -181,3 +182,129 @@ class TestScoreMatches:
         assert len(scored) == 1
         assert scored[0].score == 1.5
         assert len(scored[0].correspondences) == 2
+
+
+class TestComputeNormalizerValidity:
+    def test_all_valid_when_unique_names(self):
+        name_a = uuid.uuid4()
+        name_b = uuid.uuid4()
+        name_c = uuid.uuid4()
+        name_d = uuid.uuid4()
+        db = [
+            _make_annot(name_a),
+            _make_annot(name_b),
+            _make_annot(name_c),
+        ]
+        n_total = 6
+        annot_of_desc = np.array([0, 0, 1, 1, 2, 2], dtype=np.int32)
+        voting_annot = np.array([[1, 2]], dtype=np.int32)
+        labels = np.array([[2, 4, 0]], dtype=np.int32)
+        result = compute_normalizer_validity(
+            voting_annot, labels, annot_of_desc, n_total, db, k=1, kpad=1, qname=name_d
+        )
+        assert result[0]
+
+    def test_invalid_when_normalizer_shares_name_with_voting(self):
+        shared = uuid.uuid4()
+        db = [
+            _make_annot(shared),
+            _make_annot(shared),
+            _make_annot(uuid.uuid4()),
+        ]
+        n_total = 6
+        annot_of_desc = np.array([0, 0, 1, 1, 2, 2], dtype=np.int32)
+        voting_annot = np.array([[1, 2]], dtype=np.int32)
+        labels = np.array([[0, 4, 3]], dtype=np.int32)
+        result = compute_normalizer_validity(
+            voting_annot, labels, annot_of_desc, n_total, db, k=1, kpad=1, qname=None
+        )
+        assert not result[0]
+
+    def test_invalid_when_normalizer_shares_name_with_query(self):
+        shared = uuid.uuid4()
+        db = [
+            _make_annot(shared),
+            _make_annot(uuid.uuid4()),
+        ]
+        n_total = 4
+        annot_of_desc = np.array([0, 0, 1, 1], dtype=np.int32)
+        voting_annot = np.array([[1, -1]], dtype=np.int32)
+        labels = np.array([[2, -1, 0]], dtype=np.int32)
+        result = compute_normalizer_validity(
+            voting_annot, labels, annot_of_desc, n_total, db, k=1, kpad=1, qname=shared
+        )
+        assert not result[0]
+
+    def test_valid_when_normalizer_has_different_name(self):
+        db = [
+            _make_annot(uuid.uuid4()),
+            _make_annot(uuid.uuid4()),
+        ]
+        n_total = 4
+        annot_of_desc = np.array([0, 0, 1, 1], dtype=np.int32)
+        voting_annot = np.array([[1]], dtype=np.int32)
+        labels = np.array([[2, 0]], dtype=np.int32)
+        result = compute_normalizer_validity(
+            voting_annot,
+            labels,
+            annot_of_desc,
+            n_total,
+            db,
+            k=1,
+            kpad=0,
+            qname=uuid.uuid4(),
+        )
+        assert result[0]
+
+    def test_invalid_when_normalizer_out_of_range(self):
+        db = [_make_annot(uuid.uuid4())]
+        n_total = 2
+        annot_of_desc = np.array([0, 0], dtype=np.int32)
+        voting_annot = np.array([[0]], dtype=np.int32)
+        labels = np.array([[0, 99]], dtype=np.int32)
+        result = compute_normalizer_validity(
+            voting_annot, labels, annot_of_desc, n_total, db, k=1, kpad=0, qname=None
+        )
+        assert not result[0]
+
+    def test_conflict_in_second_voting_column(self):
+        shared = uuid.uuid4()
+        other = uuid.uuid4()
+        db = [
+            _make_annot(uuid.uuid4()),
+            _make_annot(shared),
+            _make_annot(other),
+            _make_annot(shared),
+        ]
+        n_total = 8
+        annot_of_desc = np.array([0, 0, 1, 1, 2, 2, 3, 3], dtype=np.int32)
+        voting_annot = np.array([[2, 3]], dtype=np.int32)
+        labels = np.array([[4, 6, 2]], dtype=np.int32)
+        result = compute_normalizer_validity(
+            voting_annot,
+            labels,
+            annot_of_desc,
+            n_total,
+            db,
+            k=1,
+            kpad=1,
+            qname=uuid.uuid4(),
+        )
+        assert not result[0]
+
+    def test_multiple_features_batch(self):
+        db = [
+            _make_annot(uuid.uuid4()),
+            _make_annot(uuid.uuid4()),
+            _make_annot(uuid.uuid4()),
+            _make_annot(uuid.uuid4()),
+        ]
+        n_total = 12
+        annot_of_desc = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3], dtype=np.int32)
+        voting_annot = np.array([[1, 2], [2, 3]], dtype=np.int32)
+        labels = np.array([[3, 6, 9], [6, 9, 3]], dtype=np.int32)
+        result = compute_normalizer_validity(
+            voting_annot, labels, annot_of_desc, n_total, db, k=2, kpad=0, qname=None
+        )
+        assert result[0]
+        assert result[1]
