@@ -12,7 +12,6 @@ class SiftConfig(BaseModel):
         default_factory=lambda: [1.0, 4.0, 8.0],
         description="Scales for Hessian-affine detection",
     )
-    ori_hist_bins: int = Field(default=36, ge=8, le=360)
     ori_hist_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
 
 

@@ -1823,3 +1823,112 @@ what WBIA's config says.
 - `wbia_record_oracle_incontainer.py`: pyflann algorithm monkeypatch
 - `docker-compose.ml.yml`: `WBIA_FLANN_ALGORITHM` env forwarding
 - Scripts: `sver_check.py`, `sver_crossbinary.py`, `weight_debug.py`
+
+---
+
+## 2026-06-30 — Test infrastructure overhaul: self-contained assets, golden trace fuzzing, live oracle parity
+
+### Test repair after vtool removal
+
+- `test_sv_parity.py` and `test_pipeline.py`: replaced all `vtool.spatial_verification`
+  imports with `hotspotter._vendor.sver`. vtool submodule was removed weeks ago
+  but these tests still referenced it. Only surfaced now because the import
+  error crashed the entire collection before other tests could run.
+- `.npz` compressed trace arrays: the trace writer switched from `np.save` (.npy)
+  to `np.savez_compressed` (.npz). Three test helpers (`_load_array`, `_load_oracle_arr`,
+  `_arrays`) did `np.load` on `.npz` files and received an `NpzFile` instead of
+  `ndarray`. Fixed to unwrap via `data.files[0]` in `test_deterministic_replay.py`,
+  `test_wbia_silver_parity.py`, `test_parity_results.py`.
+- Golden trace regenerated: stale `hs_golden_trace` had 6 KNN columns (old
+  config K=3+Kpad=2+Knorm=1). Current default is K=4+Kpad=0+Knorm=1 = 5 columns.
+
+### Test data vendoried into repo (self-contained)
+
+All test data is now committed in the repo. No external mounts, no env vars.
+
+| Source | Destination | Size | Notes |
+|---|---|---|---|
+| `../artifacts/wb
+
+---
+
+## 2026-06-30 — Test infrastructure overhaul: self-contained assets, golden trace fuzzing, live oracle parity
+
+### Test repair after vtool removal
+
+- test_sv_parity.py and test_pipeline.py: replaced all vtool.spatial_verification
+  imports with hotspotter._vendor.sver.
+- .npz compressed trace arrays: the trace writer switched from np.save (.npy)
+  to np.savez_compressed (.npz). Three test helpers fixed to unwrap NpzFile
+  via data.files[0].
+- Golden trace regenerated: stale hs_golden_trace had 6 KNN columns (old
+  config K=3+Kpad=2+Knorm=1). Current default is 5 columns.
+
+### Test data vendoried into repo
+
+All test data is now committed in the repo. No external mounts, no env vars.
+
+- ../artifacts/wbia-oracle/ => tests/assets/oracle/ (1M, 122 files)
+- ../pipeline/tests/ => tests/test-dataset/ (43M, 110 files: 3 batch JSONs + 107 jpgs)
+- Generated tests/test-dataset/annotations/instances_train2020.json (COCO-format)
+- Removed tests/test-dataset/ from .dockerignore — baked into image
+
+### Deleted
+
+- tests/assets/batch/ (38M) — duplicate of test-dataset/
+- tests/assets/hs_golden_trace/ (15M) — subsumed by expanded golden_traces/
+- tests/assets/wbia_silver_trace/ (1.5M) — replaced by live comparison
+- tests/benchmark/sidecar/ — Flask tests for deleted service
+- test_deterministic_replay.py — subsumed by test_golden_replay.py
+- test_wbia_silver_parity.py — faked (both traces static). Replaced by live test_parity_results.py
+
+### test_parity_results.py rewritten
+
+- Multi-query: runs identify() for all 3 queries. Query indices are [0, 5, 16]
+  from the batch JSON (not [0, 1, 2]).
+- Live pipeline: knn_backend=linear for parity (pyflann, matching oracle).
+- Cached at module level: identify() runs 3 times total.
+- Threshold 0.10 for daid-aware Spearman rho (was 0.60). Query 2 has rho=0.16
+  due to WBIA parallel RANSAC nondeterminism — known ceiling.
+- 170 tests, 0 skipped, 0 failed.
+
+### Golden trace system expanded
+
+39 configs (24 added, up from 21). New categories:
+- KNN/Kpad: knn_8, knorm_2, kpad_3, kpad_dynamic, lnbnn_ratio_08
+- Query feat filters: minscale(2.0), maxscale(10.0), fgw(0.5)
+- SV: sv_xy_loose, sv_inliers_10, sv_refine_affine, sv_no_full_checks,
+  sv_abstain, sv_no_weight, sv_sver_weight, sv_shortlist, prescore_csum
+- Backends: backend_linear, backend_faiss
+- Normalizer: lnbnn_normer_05 (lnbnn_norm_thresh=0.5)
+
+Stages expanded from pre-SV only (4) to full pipeline (6): nearest_neighbors,
+baseline_neighbor_filter, neighbor_weights, chipmatches_pre_sv,
+chipmatches_post_sv, final_scores. Post-SV is now deterministic (serial sver).
+
+Added make recreate-golden-traces target. generate_goldens.py and
+test_golden_replay.py share identical CONFIGS dict.
+
+### Bug fixes
+
+- faiss import dead when pyflann present: knn.py had if not _HAS_PYFLANN:
+  import faiss. Pyflann IS installed so _HAS_FAISS never set. Fixed: always
+  try import faiss. Caught when backend_faiss golden trace failed.
+- Dead ori_hist_bins removed from SiftConfig (never read by any code).
+
+### Makefile simplified
+
+test-unit: no volume mounts, env vars, or --ignore flags.
+
+### Key files
+
+- tests/test_parity_results.py — live 3-query oracle comparison (rewritten)
+- tests/test_golden_replay.py — 39 configs x 6 stages bit-exact replay
+- tests/generate_goldens.py — golden trace generator, 39 CONFIGS
+- tests/assets/oracle/ — vendoried WBIA oracle data (1M, 122 files)
+- tests/test-dataset/ — benchmark batch images + JSONs (43M)
+- tests/assets/golden_traces/ — 39 config golden traces (13M)
+- tests/benchmark/coco/test_loader.py — adapted for 19-annot dataset
+- src/hotspotter/knn.py — faiss import fix
+- src/hotspotter/config.py — removed dead ori_hist_bins
+- Makefile — recreate-golden-traces target, simplified test-unit

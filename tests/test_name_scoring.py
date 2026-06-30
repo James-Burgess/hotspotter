@@ -258,19 +258,13 @@ def _load_oracle_chipmatch(qaid: int = 1, cm_idx: int = 0):
     Returns (fm_list, fsv_list, dnid_list, daid_list, oracle_csum, oracle_nsum).
     """
     import json
-    import os
     from pathlib import Path
 
     import numpy as np
     import pandas as pd
 
-    oracle_root = Path(
-        os.environ.get(
-            "WBIA_ORACLE_DIR",
-            "/home/jimmy/projects/wildbook/Wildbook-infra/" "artifacts/wbia-oracle",
-        )
-    )
-    ORACLE = oracle_root / "wildme-wbia-nightly-20260625-173226"
+    _ASSETS = Path(__file__).resolve().parent / "assets"
+    ORACLE = _ASSETS / "oracle"
 
     pre_sv_arr_dir = ORACLE / "pre_sv" / "arrays"
     cm_arr_dir = ORACLE / "chipmatches_pre_sv" / "arrays"

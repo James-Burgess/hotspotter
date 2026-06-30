@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-benchmark test-benchmark-runner test-replay test-replay-live test-parity test-all shell clean
+.PHONY: build test test-unit test-benchmark test-benchmark-runner test-parity test-all shell clean recreate-golden-traces
 
 IMAGE := hotspotter:latest
 TEST_DATASET := $(CURDIR)/tests/test-dataset
@@ -12,14 +12,12 @@ ORACLE_DIR ?= $(CURDIR)/../artifacts/wbia-oracle
 build:
 	docker build --no-cache -t $(IMAGE) .
 
-# ---- Unit tests (42 tests, <2s, self-contained) ----
+# ---- Unit tests (self-contained, no external mounts needed) ----
 test: test-unit
 test-unit:
 	docker run --rm \
-		-v $(CURDIR)/../artifacts/wbia-oracle:/artifacts/wbia-oracle \
-		-e WBIA_ORACLE_DIR=/artifacts/wbia-oracle \
 		--entrypoint bash $(IMAGE) -c \
-		"pip install pytest -q && python -m pytest tests/ -q --ignore=tests/benchmark --ignore=tests/replay"
+		"pip install pytest -q && python -m pytest tests/ -q"
 
 # ---- Benchmark pytest tests (inside container, needs dataset mount) ----
 test-benchmark:
@@ -37,19 +35,6 @@ test-benchmark-runner:
 		--entrypoint bash $(IMAGE) -c \
 		"pip install pytest -q && python -m pytest tests/benchmark/test_runner.py -v"
 
-# ---- Replay tests (84 tests, self-contained, NPZ fixtures in image) ----
-test-replay:
-	docker run --rm --entrypoint bash $(IMAGE) -c \
-		"pip install pytest -q && python -m pytest tests/replay/ -v -k 'not TestLiveWbiaComparison'"
-
-# Live WBIA comparison (1 test, needs WBIA on localhost:5000 + Docker socket)
-test-replay-live:
-	docker run --rm \
-		-v /var/run/docker.sock:/var/run/docker.sock \
-		--network host \
-		-e WBIA_URL=http://localhost:5000 \
-		--entrypoint bash $(IMAGE) -c \
-		"pip install pytest -q && python -m pytest tests/replay/ -v -k 'TestLiveWbiaComparison'"
 
 # ---- Parity result tests (compare final rankings against WBIA oracle) ----
 test-parity-results:
@@ -90,6 +75,12 @@ shell:
 #     make test-parity SKIP_RECORD=1
 test-parity: build
 	ORACLE_DIR=$(ORACLE_DIR) python3 scripts/run_parity.py $(if $(SKIP_RECORD),--skip-record)
+
+recreate-golden-traces: build
+	docker run --rm \
+		-v $(CURDIR)/tests/assets/golden_traces:/app/tests/assets/golden_traces \
+		--entrypoint bash $(IMAGE) -c \
+		"python tests/generate_goldens.py"
 
 # ---- Clean ----
 clean:

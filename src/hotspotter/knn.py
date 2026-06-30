@@ -18,13 +18,12 @@ try:
 except ImportError:
     pass
 
-if not _HAS_PYFLANN:
-    try:
-        import faiss as _faiss
+try:
+    import faiss as _faiss
 
-        _HAS_FAISS = True
-    except ImportError:
-        pass
+    _HAS_FAISS = True
+except ImportError:
+    pass
 
 
 FLANNIndex = Any

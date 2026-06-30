@@ -2,11 +2,11 @@
 
 Each config in CONFIGS has a committed golden trace at
 ``tests/assets/golden_traces/{name}/``.  This test re-runs
-:func:`identify` with the same config and asserts every pre-SV stage
-matches bit-for-bit.
+:func:`identify` with the same config and asserts every stage
+(pre-SV and post-SV) matches bit-for-bit.
 
-Pre-SV stages are deterministic (exact KNN + deterministic SIFT).
-Post-SV is non-deterministic (OpenMP in sver.cpp) and excluded.
+All stages are deterministic because SV runs serially without OpenMP
+and pyhesaff produces deterministic outputs.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import pytest
 pytestmark = pytest.mark.replay
 
 _ASSETS = Path(__file__).resolve().parent / "assets"
+_DATASET = Path(__file__).resolve().parent / "test-dataset"
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
@@ -36,33 +37,65 @@ STAGES = (
     "baseline_neighbor_filter",
     "neighbor_weights",
     "chipmatches_pre_sv",
+    "chipmatches_post_sv",
+    "final_scores",
 )
 GOLDEN = _ASSETS / "golden_traces"
-BATCH = _ASSETS / "batch" / "reference_batch.json"
-IMAGE_DIR = _ASSETS / "batch" / "images"
+BATCH = _DATASET / "reference_batch.json"
+IMAGE_DIR = _DATASET / "images"
 
 CONFIGS: dict[str, dict] = {
+    # --- base / scoring ---
     "default": {},
     "fg_on": {"fg_on": True},
     "bar_l2": {"bar_l2_on": True},
     "ratio": {"ratio_thresh": 0.8},
     "normonly": {"normonly_on": True},
-    "normalizer_name": {"normalizer_rule": "name"},
     "sqrd_dist": {"sqrd_dist_on": True},
     "no_samename": {"can_match_samename": False},
     "no_sameimg": {"can_match_sameimg": True},
+    "all_filters": {"fg_on": True, "bar_l2_on": True, "ratio_thresh": 0.8},
+    "const_on": {"const_on": True},
+    "lograt_on": {"lograt_on": True},
+    "cos_on": {"cos_on": True},
+    # --- normalizer ---
+    "normalizer_name": {"normalizer_rule": "name"},
+    "lnbnn_normer": {"lnbnn_normer": "dummy", "lnbnn_norm_thresh": 0.01},
+    "lnbnn_normer_05": {"lnbnn_normer": "dummy", "lnbnn_norm_thresh": 0.5},
+    # --- score methods ---
     "csum": {"score_method": "csum"},
     "nsum_wbia": {"score_method": "nsum_wbia"},
     "csum_wbia": {"score_method": "csum_wbia"},
     "sumamech": {"score_method": "sumamech"},
     "rot_invariance": {"rotation_invariance": True, "score_method": "nsum_wbia"},
-    "sv_off": {"sv_on": False},
-    "all_filters": {"fg_on": True, "bar_l2_on": True, "ratio_thresh": 0.8},
-    "const_on": {"const_on": True},
-    "lograt_on": {"lograt_on": True},
-    "cos_on": {"cos_on": True},
-    "lnbnn_normer": {"lnbnn_normer": "dummy", "lnbnn_norm_thresh": 0.01},
+    # --- KNN / Kpad ---
+    "knn_8": {"knn": 8},
+    "knorm_2": {"knorm": 2},
+    "kpad_3": {"kpad": 3, "kpad_policy": "fixed"},
     "kpad_dynamic": {"kpad_policy": "dynamic"},
+    "lnbnn_ratio_08": {"lnbnn_ratio": 0.8},
+    # --- query feature filters ---
+    "minscale": {"minscale_thresh": 2.0},
+    "maxscale": {"maxscale_thresh": 10.0},
+    "fgw": {"fgw_thresh": 0.5},
+    # --- spatial verification ---
+    "sv_off": {"sv_on": False},
+    "sv_xy_loose": {"sv_xy_thresh": 0.05},
+    "sv_inliers_10": {"sv_min_n_inliers": 10},
+    "sv_refine_affine": {"sv_refine_method": "affine"},
+    "sv_no_full_checks": {"sv_full_homog_checks": False},
+    "sv_abstain": {"sv_abstain_on_fail": True},
+    "sv_no_weight": {"sv_weight_inliers": False},
+    "sv_sver_weight": {"sv_sver_output_weighting": True},
+    "sv_shortlist": {
+        "sv_verify_all": False,
+        "sv_n_name_shortlist": 5,
+        "sv_n_annot_per_name": 2,
+    },
+    "prescore_csum": {"prescore_method": "csum"},
+    # --- KNN backends ---
+    "backend_linear": {"knn_backend": "linear"},
+    "backend_faiss": {"knn_backend": "faiss"},
 }
 
 
@@ -91,12 +124,18 @@ def _arrays(
             continue
         if "npy_path" not in meta:
             continue
-        npy = trace_dir / stage / "arrays" / Path(meta["npy_path"]).name
-        if npy.is_file():
-            arr = np.load(npy, allow_pickle=True)
-            if hasattr(arr, "keys"):
-                arr = arr[list(arr.keys())[0]]
-            out[key] = arr
+        fname = Path(meta["npy_path"]).name
+        arrays_dir = trace_dir / stage / "arrays"
+        npy = arrays_dir / fname
+        if not npy.is_file():
+            stem = fname.rsplit(".", 1)[0]
+            npy = arrays_dir / f"{stem}.npz"
+        if not npy.is_file():
+            continue
+        arr = np.load(npy, allow_pickle=True)
+        if isinstance(arr, np.lib.npyio.NpzFile):
+            arr = arr[arr.files[0]]
+        out[key] = arr
     return out
 
 
@@ -115,7 +154,7 @@ def _db_and_qidx():
 @pytest.mark.slow
 @pytest.mark.parametrize("config_name", list(CONFIGS.keys()))
 def test_golden_replay(config_name: str, tmp_path: Path):
-    """Re-run query 0 with each config and compare pre-SV stages bit-exact."""
+    """Re-run query 0 with each config and compare all stages bit-exact."""
     golden_dir = GOLDEN / config_name
     if not golden_dir.is_dir():
         pytest.skip(f"golden trace missing for config: {config_name}")

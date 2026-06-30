@@ -159,7 +159,6 @@ class TestIdentify:
 
     def test_with_spatial_verification(self):
         """Full pipeline with SV enabled (smoke test)."""
-        pytest.importorskip("vtool.spatial_verification")
         db = _make_synthetic_database(3, 30)
         config = IdentificationConfig(
             hotspotter=HotSpotterConfig(sv_on=True, num_return=3, knn_backend="exact")

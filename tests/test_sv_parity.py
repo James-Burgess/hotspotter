@@ -10,25 +10,15 @@ the same outputs.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
-from vtool.spatial_verification import spatially_verify_kpts
+from hotspotter._vendor.sver import spatially_verify_kpts
 
-
-def _oracle_dir() -> Path:
-    raw = os.environ.get("WBIA_ORACLE_DIR", "")
-    if raw:
-        p = Path(raw)
-        nightly = p / "wildme-wbia-nightly-20260625-173226"
-        if nightly.is_dir():
-            return nightly
-        if p.is_dir():
-            return p
-    return Path("/artifacts/wbia-oracle/wildme-wbia-nightly-20260625-173226")
+_ASSETS = Path(__file__).resolve().parent / "assets"
+_ORACLE = _ASSETS / "oracle"
 
 
 pytestmark = pytest.mark.parity
@@ -40,7 +30,7 @@ class TestSvParity:
     @classmethod
     @pytest.fixture(scope="class")
     def sv_data(cls) -> dict:
-        oracle = _oracle_dir()
+        oracle = _ORACLE
         if not oracle.exists():
             pytest.skip(f"Oracle not found: {oracle}")
 
@@ -171,7 +161,7 @@ class TestSvParity:
 
     def test_sv_vs_expected_inliers(self, sv_data):
         """SV inlier count should match what WBIA oracle recorded."""
-        oracle = _oracle_dir()
+        oracle = _ORACLE
         df_post = pd.read_parquet(
             oracle / "chipmatches_post_sv" / "sv_on_true_000000.parquet"
         )

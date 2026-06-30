@@ -10,11 +10,6 @@ class TestSiftConfig:
     def test_defaults(self):
         c = SiftConfig()
         assert c.scale == [1.0, 4.0, 8.0]
-        assert c.ori_hist_bins == 36
-
-    def test_invalid_bins(self):
-        with pytest.raises(ValidationError):
-            SiftConfig(ori_hist_bins=5)
 
 
 class TestHotSpotterConfig:
