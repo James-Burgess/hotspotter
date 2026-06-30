@@ -100,6 +100,15 @@ class TestLnbnnInvariants:
         w = weight_neighbors_lnbnn(voting, norm, const_on=True)
         assert np.all((w == 0.0) | (w == 1.0))
 
+    def test_weights_non_increasing_per_row(self):
+        voting = np.abs(np.random.randn(5, 4)).astype(np.float64)
+        voting.sort(axis=1)
+        norm = np.abs(np.random.randn(5, 1)).astype(np.float64) + 1.0
+        w = weight_neighbors_lnbnn(voting, norm)
+        for row in w:
+            for j in range(len(row) - 1):
+                assert row[j] >= row[j + 1] - 1e-12
+
 
 # ---- nsum <= csum invariant ----
 
@@ -288,6 +297,32 @@ class TestFilterQueryFeatures:
         with pytest.raises(AssertionError, match="All query features filtered"):
             _filter_query_features(db, 0, hs)
 
+    def test_fgw_thresh_filters_low_fg_features(self):
+        kpts = np.array(
+            [
+                [0.0, 0.0, 2.0, 0.0, 0.0, 0.0],
+                [1.0, 1.0, 2.0, 0.0, 0.0, 0.0],
+                [2.0, 2.0, 2.0, 0.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        ann = AnnotatedImage(
+            annot_uuid=uuid.uuid4(),
+            name_uuid=uuid.uuid4(),
+            image=np.zeros((50, 50), dtype=np.uint8),
+            features=FeatureSet(
+                keypoints=kpts,
+                descriptors=np.zeros((3, 128), dtype=np.uint8),
+            ),
+            bbox=(0, 0, 50, 50),
+        )
+        db = [ann]
+        hs = HotSpotterConfig(
+            minscale_thresh=None, maxscale_thresh=None, fgw_thresh=0.5
+        )
+        result = _filter_query_features(db, 0, hs)
+        assert len(result) == 3
+
 
 # ---- Python-level invariants cross-checked ----
 
@@ -342,3 +377,16 @@ class TestCrossModuleInvariants:
         norm = np.random.randn(10, 3) + 1.0
         w = weight_neighbors_lnbnn(voting, norm)
         assert w.shape == (10, k + kpad)
+
+    def test_build_matches_no_duplicate_qfx_dfx_pairs(self):
+        ann = _make_annot(uuid.uuid4(), n_feats=3)
+        db = [ann]
+        weights = np.ones((1, 2), dtype=np.float64)
+        voting_annot = np.array([[0, 0]], dtype=np.int32)
+        voting_feat = np.array([[0, 0]], dtype=np.int32)
+        invalid = np.zeros((1, 2), dtype=bool)
+        matches = build_matches(
+            weights, voting_annot, voting_feat, invalid, db, k=1, kpad=1
+        )
+        pairs = [(m.qfx, m.dfx) for m in matches]
+        assert len(pairs) == len(set(pairs))

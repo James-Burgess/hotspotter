@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-benchmark test-benchmark-runner test-parity test-all shell clean recreate-golden-traces
+.PHONY: build test test-unit test-coverage test-benchmark test-benchmark-runner test-parity test-all shell clean recreate-golden-traces
 
 IMAGE := hotspotter:latest
 TEST_DATASET := $(CURDIR)/tests/test-dataset
@@ -18,6 +18,18 @@ test-unit:
 	docker run --rm \
 		--entrypoint bash $(IMAGE) -c \
 		"pip install pytest -q && python -m pytest tests/ -q"
+
+test-coverage:
+	mkdir -p coverage-reports
+	docker run --rm \
+		-v $(CURDIR)/coverage-reports:/app/coverage-reports \
+		--entrypoint bash $(IMAGE) -c \
+		"pip install pytest pytest-cov -q && python -m pytest tests/ -v \
+			--cov=hotspotter \
+			--cov-report=term-missing \
+			--cov-report=xml:/app/coverage-reports/coverage.xml \
+			--cov-report=json:/app/coverage-reports/coverage.json \
+			--cov-report=html:/app/coverage-reports/html"
 
 # ---- Benchmark pytest tests (inside container, needs dataset mount) ----
 test-benchmark:

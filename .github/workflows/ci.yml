@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  docker-tests:
+    name: Docker Tests + Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build Docker image
+        run: docker build --no-cache -t hotspotter:ci .
+
+      - name: Run tests with coverage
+        run: make IMAGE=hotspotter:ci test-coverage
+
+      - name: Add coverage summary
+        if: always()
+        run: |
+          if [ -f coverage-reports/coverage.json ]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("coverage-reports/coverage.json").read_text())
+          total = data["totals"]["percent_covered_display"]
+          covered = data["totals"]["covered_lines"]
+          statements = data["totals"]["num_statements"]
+
+          print("## Coverage")
+          print()
+          print(f"- Total: **{total}%**")
+          print(f"- Lines: **{covered}/{statements}**")
+          print("- Reports: see the `coverage-reports` artifact")
+          PY
+          else
+            echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"
+            echo "Coverage report was not generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: coverage-reports/
+          if-no-files-found: warn

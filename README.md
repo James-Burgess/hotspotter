@@ -1,5 +1,7 @@
 # Hotspotter
 
+[![CI](https://github.com/James-Burgess/wbia-core/actions/workflows/ci.yml/badge.svg)](https://github.com/James-Burgess/wbia-core/actions/workflows/ci.yml)
+
 Stateless HotSpotter wildlife re-identification pipeline — extracted from `wildbook-ia`, distributed as a pure-Python pip package.
 
 ## Executive summary
