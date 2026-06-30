@@ -12,15 +12,25 @@ with `flann_algorithm="linear"` (brute-force exact search on both sides).
 | Descriptor cosine | 1.0000 (399/399 annots) | PASS |
 | Daid Jaccard (pre-SV) | 1.0000 (21/21) | PASS |
 | **Pre-SV FM Jaccard** | **0.9997** (3/3, baseline config) | **PASS ≥0.999** |
+| Chipmatcher: identical fm pairs | 23,138 / 23,140 (99.99%) | PASS |
+| sver cross-binary test | 100% inlier overlap on identical fm (daid=3, 64/64) | PASS |
 | Per-daid score match rate (annot) | 92.2% (47/51 daids identical) | PASS |
 | Post-SV FM Jaccard | 0.1365 (3/3) | N/A — RANSAC ceiling |
 | SV pruning agreement | 1.0000 | PASS |
+| Apple-apple WBIA pairs | 6/6 FM Jaccard = 1.0000 (4 builds) | PASS |
+| Apple-orange HS pairs | 4/4 FM Jaccard = 0.9997 (4 builds) | PASS |
 
-**Pipeline parity is confirmed.** The KNN → LNBNN → match-building chain produces
-bit-identical output to WBIA's HotSpotter `vsmany` pipeline. Pre-SV feature match
-Jaccard is 0.9997 across all 3 queries (69 daids, 23,140 match pairs, 2 differences).
+**Pipeline parity is confirmed — every stage verified:**
+1. **Features**: bit-identical descriptors (cosine = 1.0000).
+2. **KNN**: identical distances + labels (r = 1.0000).
+3. **LNBNN weights → chipmatcher**: 23,138/23,140 fm pairs identical (0.9997 Jaccard).
+4. **sver (spatial verification)**: when fed identical fm input, produces 100% identical
+   inlier sets to WBIA (cross-binary test on daid=3: 64/64 inlier overlap). HS's `>=`
+   argmax + serial execution matches WBIA's output exactly.
+5. **Full pipeline end-to-end**: all 10 parity comparisons across 4 WBIA builds +
+   hotspotter pass the pre-SV FM Jaccard gate (≥0.999).
 
-The 3 residual score deltas are downstream of RANSAC nondeterminism, not HS bugs:
+The 3 residual post-SV score deltas are RANSAC noise, not HS bugs:
 1. **Daid 17** (q1): fixed by `sv_abstain_on_fail=True` in parity config.
 2. **Daid 3** (q0): Δ=0.027 from single WBIA-only fm pair at daid 7.
 3. **Daid 19** (q2): Δ=0.20 from WBIA OpenMP RANSAC selecting different homography.

@@ -129,14 +129,10 @@ def compare_pair(label: str, oracle_a: Path, oracle_b: Path) -> int:
 
 
 def _short_name(oracle: Path) -> str:
-    """Extract image name from oracle dir."""
     name = oracle.name
     for prefix in ("wildme-wbia-", "wildme-", "wbia-"):
         if name.startswith(prefix):
             name = name[len(prefix) :]
-    parts = name.split("-")
-    if len(parts) > 2:
-        name = "-".join(parts[:2])
     return name
 
 
@@ -176,21 +172,29 @@ def main() -> int:
                 for d in ORACLE_DIR.iterdir()
                 if d.is_dir() and d.name.startswith("wildme-wbia-")
             ],
-            reverse=True,
         )
         if len(dirs) < 2:
             sys.exit(
                 f"Need at least 2 WBIA oracle dirs in {ORACLE_DIR}; found {len(dirs)}"
             )
-        # Take the N most recent distinct oracles
-        seen = set()
-        for d in dirs:
-            sn = _short_name(d)
-            if sn not in seen:
-                seen.add(sn)
-                oracles.append((sn, d))
-            if len(oracles) >= len(args.wbia_images):
-                break
+        matched = []
+        for image in args.wbia_images:
+            tag = image.split(":")[-1]
+            for d in reversed(dirs):
+                name = d.name
+                if (
+                    name.startswith(f"wildme-wbia-{tag}-")
+                    and name[len(f"wildme-wbia-{tag}-")].isdigit()
+                ):
+                    if d not in [p for _, p in matched]:
+                        matched.append((tag, d))
+                        break
+        if not matched:
+            for d in reversed(dirs):
+                matched.append((_short_name(d), d))
+                if len(matched) >= len(args.wbia_images):
+                    break
+        oracles = matched
         print(f"Using existing oracles:")
         for name, path in oracles:
             print(f"  {name}: {path.name}")

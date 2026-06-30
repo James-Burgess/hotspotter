@@ -21,6 +21,55 @@ score.
 4. **Verify** — run RANSAC homography spatial verification to reject
    matches that don't form a consistent geometric relationship.
 
+### Pipeline diagram
+
+```mermaid
+flowchart TD
+    IMG["Input images<br/>+ annotations"] --> CHIP
+
+    subgraph FEAT ["1. Feature Extraction &amp; Chip Processing"]
+        CHIP["Chip extraction<br/>crop, mask, resize"] --> SIFT["Hessian-Affine SIFT<br/>(pyhesaff C++)<br/>keypoints [N,6] · descriptors [N,128]"]
+    end
+
+    subgraph KNN ["2. KNN Search"]
+        SIFT --> IDX["Build global index<br/>over DB descriptors<br/>(query excluded)"]
+        IDX --> QRY["Query K+Kpad+Knorm<br/>nearest neighbors"]
+        QRY --> NORM["Normalize distances<br/>÷ SIFT_MAX_SQRT_DIST → √"]
+    end
+
+    subgraph LNBNN ["3. LNBNN Scoring"]
+        NORM --> VOTE["Split vote cols [K+Kpad]<br/>+ normalizer cols [Knorm]"]
+        VOTE --> BFILT["Baseline filter<br/>self · same-name · same-image"]
+        BFILT --> NSEL["Select normalizer<br/>(last col or name-rule)"]
+        NSEL --> WT["LNBNN weights<br/>w = max(0, norm − nn)<br/>+ optional: bar_l2 · ratio · const · cos"]
+        WT --> FG{"fg_on?"}
+        FG -->|Yes| FGW["× √(q_fg · db_fg)"]
+        FG -->|No| BM
+        FGW --> BM["Build matches<br/>(qfx, daid, dfx, weight)"]
+        BM --> NS["Name-level scoring<br/>nsum · csum · fmech<br/>+ canonical alignment"]
+    end
+
+    NS ==>|"trace: chipmatches_pre_sv"| SVD
+
+    subgraph SV ["4. Spatial Verification"]
+        SVD{"sv_on?"}
+        SVD -->|No| FINAL
+        SVD -->|Yes| SL["Prescore shortlist<br/>(top-N names / verify-all)"]
+        SL --> RANSAC["RANSAC homography<br/>(libsver.so — serial, ≥)"]
+        RANSAC --> INL["Inlier filter<br/>xy · scale · ori thresholds"]
+        INL --> RESC["Re-score with<br/>SV inliers only"]
+    end
+
+    RESC ==>|"trace: chipmatches_post_sv"| FINAL
+
+    FINAL["Ranked ScoredMatch list<br/>annot_uuid · score · correspondences<br/>sv_inliers · sv_homography"]
+
+    style FEAT fill:#e1f5fe,stroke:#0288d1
+    style KNN fill:#f3e5f5,stroke:#7b1fa2
+    style LNBNN fill:#e8f5e9,stroke:#388e3c
+    style SV fill:#fff3e0,stroke:#f57c00
+```
+
 **What it replaces** — the Hotspotter algorithm core from Wildbook's
 `wildbook-ia` monorepo. Extraction verified to WBIA parity (see
 `docs/parity.md`). Top-1 identification accuracy: 87% on the GZGC
